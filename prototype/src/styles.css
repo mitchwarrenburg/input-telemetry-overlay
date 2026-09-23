@@ -669,6 +669,15 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px 
   border-top: 4px solid rgb(var(--you-rgb));
   border-bottom: 0;
 }
+/* …and the dotted line through the peak. */
+.key-live::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 4px);
+  height: 5px;
+  border-left: 1px dotted rgba(var(--you-rgb), 0.7);
+}
 .key-ref { border: 1px solid rgba(var(--target-rgb), 0.8); background: rgba(var(--hud-surface), 0.72); color: rgb(var(--target-rgb)); font-weight: 600; }
 .key-ref::after {
   content: "";

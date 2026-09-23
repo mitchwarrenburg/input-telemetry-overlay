@@ -11,7 +11,6 @@
     muted: "#7f8b89",
     grid: "rgba(255, 255, 255, 0.07)",
     baseline: "rgba(255, 255, 255, 0.16)",
-    peakLine: "rgba(245, 200, 80, 0.55)", // reference peak (the target): dotted line and its label's border
   };
   // Reference peak labels sit in their own row between the header and the plot, so they
   // never cover a trace at 100%. The plot moves down by RAIL_ROOM to make space for it.
@@ -147,7 +146,11 @@
 
       // Reference peaks: a dotted line through each, under your lines.
       const refPeaks = railOn ? this.refPeaks(sc, ref, fr, X, Y, plot) : [];
-      this.drawPeakLines(refPeaks, Y, plot);
+      this.drawPeakLines(refPeaks, Y, plot, `rgba(${RGB.target}, 0.55)`);
+
+      // Your peaks: a dotted line through each too, in your colour.
+      const livePeaks = labels.show && labels.mode !== "ref" ? this.livePeaks(sc, X, Y) : [];
+      this.drawPeakLines(livePeaks, Y, plot, `rgba(${RGB.you}, 0.55)`);
 
       // Live inputs: solid lines up to the car.
       const live = livePoints(sc.live, sc, -sc.behind - margin);
@@ -170,7 +173,7 @@
       const rail = this.drawRail(refPeaks);
 
       // Your peaks: pinned to the apex of your brake line, on top of everything else.
-      if (labels.show && labels.mode !== "ref") this.drawPins(sc, X, Y, plot, [...sc.obstacles, ...rail]);
+      this.drawPins(livePeaks, plot, [...sc.obstacles, ...rail]);
 
       // Y labels.
       ctx.font = `600 10px ${FONT}`;
@@ -363,11 +366,11 @@
     }
 
     // Dotted line from the rail down through each reference peak to the 0% line.
-    drawPeakLines(peaks, Y, plot) {
+    drawPeakLines(peaks, Y, plot, color) {
       if (!peaks.length) return;
       const { ctx } = this;
       ctx.save();
-      ctx.strokeStyle = INK.peakLine;
+      ctx.strokeStyle = color;
       ctx.lineWidth = 1;
       ctx.lineCap = "round";
       ctx.setLineDash([0.01, 3]);
@@ -409,15 +412,19 @@
     // header or another pin. Below, it reaches right from the apex: a peak is usually where the brake
     // line tops out, so that's under the line rather than across the rise to it. The one
     // you're braking in is placed first.
-    drawPins(sc, X, Y, plot, taken) {
-      const { ctx } = this;
+    // Your peaks in view (behind the car), nearest the car first.
+    livePeaks(sc, X, Y) {
       const isDist = sc.axis === "distance";
-      const pins = [];
+      const out = [];
       for (const e of sc.live.events) {
         const v = isDist ? e.peakD - sc.now.D : e.peakT - sc.now.t;
-        if (e.peak >= sc.labels.min && v >= -sc.behind && v <= 0) pins.push({ x: X(v), y: Y(e.peak), peak: e.peak, v });
+        if (e.peak >= sc.labels.min && v >= -sc.behind && v <= 0) out.push({ x: X(v), y: Y(e.peak), peak: e.peak, v });
       }
-      pins.sort((a, b) => b.v - a.v); // nearest the car first
+      return out.sort((a, b) => b.v - a.v);
+    }
+
+    drawPins(pins, plot, taken) {
+      const { ctx } = this;
       ctx.font = `700 10.5px ${FONT}`;
       const placed = [...taken];
       const drawn = [];

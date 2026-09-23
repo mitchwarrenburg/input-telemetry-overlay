@@ -16,7 +16,8 @@ serve the folder (`python -m http.server 8617`) and visit `http://localhost:8617
 - **Brake peak labels:** the highest % in each braking zone. Each reference peak gets a
   gold dotted line through it, with its percentage pinned to the top of the line in gold, so
   the reference labels sit in a row along the top of the graph. Your peaks get a light blue
-  number (no background) over a light blue pointer that touches the apex of your brake line (below the
+  dotted line of their own and a light blue number (no background) over a light blue pointer
+  that touches the apex of your brake line (below the
   apex if above is taken); it rises with your pressure while you're still on the brake.
 - **Brake point countdown:** a second window that counts 3-2-1-BRAKE into each of the
   reference lap's brake points, with a bar filling in step and the zone's target peak
