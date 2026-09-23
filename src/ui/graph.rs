@@ -69,8 +69,9 @@ const FLOOR: f32 = 0.004;
 /// Extra window drawn past each side (fraction of the span) so lines run off the edges.
 const OVERSCAN: f64 = 0.02;
 /// The canvas' 6 px shadow blur (series colour @ 55%) under a live line, approximated
-/// by nested faint strokes: (width, alpha of the series colour).
-const GLOW: [(f32, f32); 4] = [(14.0, 0.015), (10.0, 0.025), (8.0, 0.03), (5.0, 0.055)];
+/// by two faint strokes (width, alpha of the series colour); each stroke is a full
+/// tessellation of the line, so this is kept short.
+const GLOW: [(f32, f32); 2] = [(12.0, 0.035), (6.0, 0.06)];
 /// egui centres a text's whole row box, which puts Barlow a point below where the
 /// canvas' `middle` baseline (used for all the prototype's text) puts it.
 const MIDDLE_BASELINE: Vec2 = vec2(0.0, -1.0);
@@ -207,25 +208,32 @@ impl<'a> View<'a> {
     }
 
     /// A reference series as a vertical-gradient area plus an edge line that lifts off
-    /// along zero stretches, so the baseline stays clean.
+    /// along zero stretches, so the baseline stays clean. Thinned to one physical pixel
+    /// per column first, like the live lines: a lap has more samples than the plot has
+    /// pixels.
     fn paint_area(&self, painter: &Painter, samples: &[(f64, usize)], values: &[f32], color: Color32, opacity: f32) {
-        if samples.len() < 2 {
+        let mut thin = Decimator::new(1.0 / self.painter.pixels_per_point());
+        for &(v, i) in samples {
+            thin.push(pos2(self.scale.x(v), self.scale.y(pedal(values[i]))));
+        }
+        let points = thin.finish();
+        if points.len() < 2 {
             return;
         }
         let top = theme::alpha(color, 0.36 * opacity);
         let bottom = theme::alpha(color, 0.02 * opacity);
         let edge = Stroke::new(1.25, theme::alpha(color, 0.6 * opacity));
         let base = self.plot.bottom();
-        let lifted = |j: Option<usize>| j.and_then(|j| samples.get(j)).is_some_and(|&(_, i)| values[i] > FLOOR);
+        let value_at = |p: Pos2| ((base - p.y) / self.plot.height()).clamp(0.0, 1.0);
+        let lifted = |j: Option<usize>| j.and_then(|j| points.get(j)).is_some_and(|&p| value_at(p) > FLOOR);
 
         let mut mesh = Mesh::default();
-        mesh.reserve_vertices(2 * samples.len());
-        mesh.reserve_triangles(2 * (samples.len() - 1));
+        mesh.reserve_vertices(2 * points.len());
+        mesh.reserve_triangles(2 * (points.len() - 1));
         let mut edges = Vec::new();
         let mut run = Vec::new();
-        for (j, &(v, i)) in samples.iter().enumerate() {
-            let value = pedal(values[i]);
-            let p = pos2(self.scale.x(v), self.scale.y(value));
+        for (j, &p) in points.iter().enumerate() {
+            let value = value_at(p);
             // Colour by height: the gradient runs from the plot top to the baseline.
             let n = mesh.vertices.len() as u32;
             mesh.colored_vertex(p, bottom.lerp_to_gamma(top, value));

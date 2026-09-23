@@ -117,11 +117,16 @@ impl Default for Settings {
 impl Settings {
     /// Reads settings, falling back to defaults for a missing or unreadable file.
     pub fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<Settings>(&s).ok())
-            .unwrap_or_default()
-            .sanitized()
+        let Ok(text) = std::fs::read_to_string(path) else { return Settings::default() };
+        // Notepad and PowerShell 5 save UTF-8 with a byte-order mark.
+        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+        match serde_json::from_str::<Settings>(text) {
+            Ok(settings) => settings.sanitized(),
+            Err(e) => {
+                log::warn!("{} couldn't be read ({e}); using the default settings", path.display());
+                Settings::default()
+            }
+        }
     }
 
     pub fn save(&self, path: &Path) -> io::Result<()> {
@@ -210,6 +215,8 @@ mod tests {
     fn garbage_falls_back_to_defaults() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
+        std::fs::write(&path, "\u{feff}{\"bg_opacity\": 35}").unwrap();
+        assert_eq!(Settings::load(&path).bg_opacity, 35.0, "a byte-order mark is fine");
         std::fs::write(&path, "{not json").unwrap();
         assert_eq!(Settings::load(&path), Settings::default());
         assert_eq!(Settings::load(&dir.path().join("missing.json")), Settings::default());

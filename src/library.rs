@@ -213,6 +213,7 @@ impl Library {
             laps: Vec<Value>,
             active: Value,
         }
+        let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes); // UTF-8 byte-order mark
         let stored: Stored = serde_json::from_slice(bytes)?;
         let total = stored.laps.len();
         let mut library = Library::default();
