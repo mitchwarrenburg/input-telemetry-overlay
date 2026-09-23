@@ -166,7 +166,7 @@
         <li><b>One tag per braking zone.</b> Your peak and the reference's in the same zone share one tag: yours in the solid pill, the reference's beside it as a plain number. If the pair doesn't fit it splits into two labels.</li>
         <li><b>Lighter.</b> Reference peaks are plain numbers with a dark halo, no box, so they cover only their own strokes. No "%" (the axis says it). A hairline leader joins a label to its dot only when it sits more than 7 px away.</li>
         <li><b>Most useful first.</b> The zone you're braking in, then the next zone ahead, then by distance from the car with big peaks ahead of light dabs. Small graphs show fewer: leaders stay under 45% of the plot's height and there's one label per 80 px of width.</li>
-        <li><b>Steady.</b> A label keeps last frame's spot unless another is clearly better, and glides (about 0.1 s) when it moves. Played back over two laps, labels change spot about once every 4 s on average, mostly while your peak is still rising.</li>
+        <li><b>Steady.</b> A label keeps last frame's spot unless another is clearly better, and glides (about 0.1 s) when it moves; mid-glide it can briefly graze a line. Played back over two laps (simulated driver), each label changes spot about once every 4 s on average, about 0.4 changes a second across the graph, mostly while your peak is still rising. A pair splitting into two labels, or joining back, jumps rather than glides.</li>
       </ol>
       <div class="shots wide" id="shotsWide" style="margin-top: 14px"></div>
       <div class="shots" id="shots" style="margin-top: 12px"></div>
