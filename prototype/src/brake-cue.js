@@ -14,7 +14,7 @@
     veryEarly: { label: "Very early", chip: "«« Early", rgb: "91, 140, 255" },
     early: { label: "Early", chip: "« Early", rgb: "111, 193, 255" },
     good: { label: "Good", chip: "Good", rgb: "46, 230, 160" },
-    perfect: { label: "Perfect", chip: "Perfect", rgb: "178, 124, 255" },
+    perfect: { label: "Perfect", chip: "Perfect", rgb: "200, 36, 208", ink: "#fff" }, // "fastest lap" purple
     late: { label: "Late", chip: "Late »", rgb: "255, 177, 59" },
     veryLate: { label: "Very late", chip: "Late »»", rgb: "255, 107, 61" },
     none: { label: "No brake", chip: "No brake", rgb: "127, 139, 137" },
@@ -341,6 +341,7 @@
         this.chip.hidden = false;
         this.chip.textContent = g.chip;
         this.chip.style.setProperty("--g", g.rgb);
+        this.chip.style.color = v.pending ? "" : g.ink || ""; // an outlined, pending chip keeps its own
         this.chip.classList.toggle("is-pending", v.pending);
         this.vtime.textContent = v.dt == null ? "" : signed(v.dt, 2, " s");
         this.vdist.textContent = v.dm == null ? "" : signed(v.dm, 0, " m");

@@ -236,7 +236,7 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
   /* The count builds in red, darker the nearer the brake point. */
   --count-light: #ff6f62;
   --count-deep: #8a1a11;
-  --perfect: 178, 124, 255;
+  --perfect: 200, 36, 208; /* "fastest lap" purple */
   width: 360px;
   height: 96px;
 }
@@ -362,11 +362,11 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 .cue-body[data-flash="perfect"] .cue-fill { clip-path: none; background: rgb(var(--perfect)); }
 .cue-body[data-flash="perfect"] .cue-join { opacity: 0; }
 .cue-body[data-flash="perfect"] .cue-cap {
-  color: rgba(26, 11, 46, calc(0.4 + 0.6 * var(--flash-a)));
+  color: rgba(255, 255, 255, calc(0.4 + 0.6 * var(--flash-a)));
   background: rgba(var(--perfect), var(--flash-a));
 }
 .cue-body[data-flash="perfect"] .cue-track,
-.cue-body[data-flash="perfect"] .cue-cap { box-shadow: 0 0 12px rgba(var(--perfect), calc(0.7 * var(--flash-a))); }
+.cue-body[data-flash="perfect"] .cue-cap { box-shadow: 0 0 14px rgba(var(--perfect), calc(0.8 * var(--flash-a))); }
 /* After it, the bar stays empty while you're still braking; the gauge has your pressure. */
 .cue-body[data-mode="braking"]:not([data-flash]) .cue-fill { opacity: 0; }
 .cue-body[data-mode="noref"] .cue-cap,

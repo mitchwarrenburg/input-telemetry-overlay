@@ -168,7 +168,7 @@
       ["none", "no brake where the reference brakes"],
     ];
     document.getElementById("gradeKey").innerHTML = rows
-      .map(([g, text]) => `<span><i class="cue-chip" style="--g: ${ITO.GRADES[g].rgb}">${ITO.GRADES[g].chip}</i>${text}</span>`)
+      .map(([g, text]) => `<span><i class="cue-chip" style="--g: ${ITO.GRADES[g].rgb}; color: ${ITO.GRADES[g].ink || ""}">${ITO.GRADES[g].chip}</i>${text}</span>`)
       .join("");
   }
   renderGradeKey();

@@ -120,7 +120,7 @@
     ["none", "no brake-on", "Lifted or stayed flat where the reference brakes."],
   ].map(([g, range, text]) => {
     const G = ITO.GRADES[g];
-    return `<div><i class="cue-chip" style="--g: ${G.rgb}; font-style: normal">${G.chip}</i><strong>${G.label}</strong><small>${range}</small><small>${text}</small></div>`;
+    return `<div><i class="cue-chip" style="--g: ${G.rgb}; color: ${G.ink || ""}; font-style: normal">${G.chip}</i><strong>${G.label}</strong><small>${range}</small><small>${text}</small></div>`;
   }).join("");
 
   // ---------- other cases ----------
