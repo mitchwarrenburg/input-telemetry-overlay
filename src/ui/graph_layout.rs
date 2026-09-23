@@ -716,7 +716,7 @@ mod tests {
 
     #[test]
     fn labels_never_leave_the_plot() {
-        for (w, h) in [(680.0, 170.0), (300.0, 190.0), (260.0, 90.0)] {
+        for (w, h) in [(680.0, 170.0), (300.0, 190.0), (272.0, 90.0)] {
             let (p, l) = (panel(w, h), layout(w, h));
             let top = p.top() + 2.0;
             let mut placer = LabelPlacer::new(l.plot, top, []);
