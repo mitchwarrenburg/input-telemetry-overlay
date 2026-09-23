@@ -14,9 +14,11 @@
     brakePill: "rgba(224, 48, 31, 0.82)", // your peak pill: a step darker than the line, slightly see-through
     peakLine: "rgba(232, 239, 238, 0.5)", // reference peak: dotted line and its label's border
   };
-  // Reference peak labels sit on a rail across the top of the plot, this far above it.
-  const RAIL_RISE = 9;
+  // Reference peak labels sit in their own row between the header and the plot, so they
+  // never cover a trace at 100%. The plot moves down by RAIL_ROOM to make space for it.
   const RAIL_H = 13;
+  const RAIL_GAP = 2; // row to the plot's top edge
+  const RAIL_ROOM = 6;
   const PIN_H = 14; // your peak's pill
   const PIN_TIP = 4; // its pointer
   const FONT = '"Barlow Semi Condensed", "Segoe UI", system-ui, sans-serif';
@@ -97,7 +99,10 @@
 
       const compact = w < 400;
       const showX = h >= 118;
-      const plot = { x: compact ? 26 : 32, y: sc.headerH + 8 };
+      const ref = sc.ref && sc.showRef ? sc.ref : null;
+      const labels = sc.labels;
+      const railOn = labels.show && ref && labels.mode !== "live";
+      const plot = { x: compact ? 26 : 32, y: sc.headerH + 8 + (railOn ? RAIL_ROOM : 0) };
       plot.w = w - plot.x - 10;
       plot.h = h - plot.y - (showX ? 20 : 8);
       if (plot.w < 40 || plot.h < 16) return;
@@ -107,7 +112,6 @@
       const X = (v) => plot.x + ((v + sc.behind) / span) * plot.w;
       const Y = (p) => plot.y + (1 - p) * plot.h;
       const cx = X(0);
-      const ref = sc.ref && sc.showRef ? sc.ref : null;
       const fr = ref ? refFrame(sc, ref) : null;
       const margin = span * 0.02;
 
@@ -143,8 +147,7 @@
       }
 
       // Reference peaks: a dotted line through each, under your lines.
-      const labels = sc.labels;
-      const refPeaks = labels.show && ref && labels.mode !== "live" ? this.refPeaks(sc, ref, fr, X, Y, plot) : [];
+      const refPeaks = railOn ? this.refPeaks(sc, ref, fr, X, Y, plot) : [];
       this.drawPeakLines(refPeaks, Y, plot);
 
       // Live inputs: solid lines up to the car.
@@ -156,9 +159,6 @@
       // Brake points: a mark at each reference brake-on, your gap to it underlined.
       if (ref && sc.cue) this.drawBrakePoints(sc, ref, fr, X, Y, plot);
 
-      // Reference peak labels on the rail; the cursor draws over them as they pass it.
-      const rail = this.drawRail(refPeaks);
-
       // Car position: cursor, playhead and current-value dots.
       ctx.strokeStyle = "rgba(255, 255, 255, 0.92)";
       ctx.lineWidth = 1.5;
@@ -166,6 +166,9 @@
       ctx.fillStyle = "#fff";
       ctx.beginPath(); ctx.moveTo(cx - 4, plot.y - 7); ctx.lineTo(cx + 4, plot.y - 7); ctx.lineTo(cx, plot.y - 2); ctx.closePath(); ctx.fill();
       for (const [val, rgb] of [[sc.now.throttle, RGB.throttle], [sc.now.brake, RGB.brake]]) this.dot(cx, Y(val), rgb);
+
+      // Reference peak labels in their row, over the cursor as one passes it.
+      const rail = this.drawRail(refPeaks);
 
       // Your peaks: pinned to the apex of your brake line, on top of everything else.
       if (labels.show && labels.mode !== "ref") this.drawPins(sc, X, Y, plot, [...sc.obstacles, ...rail]);
@@ -343,7 +346,7 @@
         }
       });
       ctx.font = `600 10px ${FONT}`;
-      const top = plot.y - RAIL_RISE;
+      const top = plot.y - RAIL_GAP - RAIL_H;
       const placed = [];
       const near = (p) => (p.x >= cx ? (p.x - cx) * 0.5 : cx - p.x); // ahead counts double
       for (const p of [...out].sort((a, b) => near(a) - near(b))) {
@@ -369,10 +372,9 @@
       ctx.lineWidth = 1;
       ctx.lineCap = "round";
       ctx.setLineDash([0.01, 3]);
-      const top = plot.y - RAIL_RISE + RAIL_H;
       for (const p of peaks) {
         const x = Math.round(p.x) + 0.5;
-        ctx.beginPath(); ctx.moveTo(x, top + 1); ctx.lineTo(x, Y(0)); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x, plot.y); ctx.lineTo(x, Y(0)); ctx.stroke();
       }
       ctx.restore();
     }
@@ -404,7 +406,9 @@
 
     // Your peaks: a solid pill whose pointer touches the apex of your brake line. It sits
     // above the apex, or below when above would run into a reference label, the header or
-    // another pin. The one you're braking in is placed first.
+    // another pin. Below, it reaches right from the apex: a peak is usually where the brake
+    // line tops out, so that's under the line rather than across the rise to it. The one
+    // you're braking in is placed first.
     drawPins(sc, X, Y, plot, taken) {
       const { ctx } = this;
       const isDist = sc.axis === "distance";
@@ -422,11 +426,11 @@
         const w = Math.ceil(ctx.measureText(text).width) + 8;
         const x = clamp(p.x - w / 2, plot.x, plot.x + plot.w - w);
         const above = { x, y: p.y - 2 - PIN_TIP - PIN_H, w, h: PIN_H, up: false };
-        const below = { x, y: p.y + 2 + PIN_TIP, w, h: PIN_H, up: true };
+        const below = { x: clamp(p.x - 9, plot.x, plot.x + plot.w - w), y: p.y + 2 + PIN_TIP, w, h: PIN_H, up: true };
         const clear = (b) => b.y >= 2 && b.y + b.h <= plot.y + plot.h && !placed.some((q) => overlaps(q, b, 1));
         const box = clear(above) ? above : clear(below) ? below : above;
         placed.push(box);
-        drawn.push({ box, text, ax: clamp(p.x, x + 4, x + w - 4), ay: p.y });
+        drawn.push({ box, text, ax: clamp(p.x, box.x + 4, box.x + w - 4), ay: p.y });
       }
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";

@@ -161,9 +161,9 @@
     <section id="labels">
       <h2>Peak labels</h2>
       <ol class="rules">
-        <li><b>Reference peaks.</b> A light dotted line runs from the top of the plot through each reference peak (the hollow dot) down to the 0% line, under your lines. Its percentage is pinned to the top of the line, so the reference labels sit in one row along the top and never move relative to their peaks. Where two would overlap, the one farther from the car shifts up to 8 px, and if that isn't enough it's left off; its line stays.</li>
-        <li><b>Your peaks.</b> A solid red pill whose pointer touches the apex of your brake line, exactly at the peak. It sits above the apex, and drops below it only when above would run into a reference label, the header or another of your pills. The one you're braking in rises with your pressure.</li>
-        <li><b>Nothing else moves them.</b> No searching for space and no leader lines: the reference numbers stay at the top, yours stay on your trace. The cursor draws over the reference row as a label passes it; your pills draw over everything.</li>
+        <li><b>Reference peaks.</b> A light dotted line runs from the top of the plot through each reference peak (the hollow dot) down to the 0% line, under your lines. Its percentage is pinned to the top of the line, in a row of its own between the header and the plot (the plot moves down 6 px for it), so a label never covers a trace at 100% and never moves relative to its peak. Where two would overlap, the one farther from the car shifts up to 8 px, and if that isn't enough it's left off; its line stays.</li>
+        <li><b>Your peaks.</b> A solid red pill whose pointer touches the apex of your brake line, exactly at the peak. It sits above the apex, and drops below it only when above would run into a reference label, the header or another of your pills. Below, it reaches right from the apex, under the flat top of your brake line rather than across the rise to it. The one you're braking in rises with your pressure.</li>
+        <li><b>Nothing else moves them.</b> No searching for space and no leader lines: the reference numbers stay at the top, yours stay on your trace. A reference label passing the car draws over the top of the cursor, so its number isn't split; your pills draw over everything.</li>
         <li><b>Brake point marks move down.</b> The countdown's brake point marks now sit on the 0% line (▲), leaving the top row to the labels.</li>
       </ol>
       <div class="shots wide" id="shotsWide" style="margin-top: 14px"></div>
