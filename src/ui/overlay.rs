@@ -14,8 +14,9 @@ use super::theme::{self, Weight};
 pub const MARGIN: f32 = 8.0;
 /// Height of the header strip at the top of the panel, points.
 pub const HEADER_HEIGHT: f32 = 26.0;
-/// Smallest panel, points.
-pub const MIN_PANEL: Vec2 = vec2(260.0, 90.0);
+/// Smallest panel, points: wide enough for the short title, the longest badge
+/// ("REF: OTHER LAYOUT"), the gear and the close button.
+pub const MIN_PANEL: Vec2 = vec2(272.0, 90.0);
 
 const RADIUS: u8 = 8;
 const BORDER_W: f32 = 1.0;
@@ -126,6 +127,20 @@ pub fn content_rect(window: Rect) -> Rect {
     panel_rect(window).shrink(BORDER_W)
 }
 
+/// The header strip at the top of the content.
+fn header_rect(window: Rect) -> Rect {
+    let content = content_rect(window);
+    Rect::from_min_size(content.min, vec2(content.width(), HEADER_HEIGHT))
+}
+
+/// The close button, at the header's right end; the gear sits just left of it.
+fn close_rect(header: Rect) -> Rect {
+    Rect::from_center_size(
+        pos2(header.right() - PAD_RIGHT - GEAR_SIZE / 2.0, header.center().y),
+        Vec2::splat(GEAR_SIZE),
+    )
+}
+
 /// Paints the panel background and the header, and senses the header drag, the gear
 /// and the close button. Call before painting the graph.
 pub fn panel_and_header(ui: &Ui, window: Rect, chrome: &Chrome) -> Header {
@@ -133,7 +148,7 @@ pub fn panel_and_header(ui: &Ui, window: Rect, chrome: &Chrome) -> Header {
     paint_panel(painter, window, chrome.opacity);
 
     let content = content_rect(window);
-    let header = Rect::from_min_size(content.min, vec2(content.width(), HEADER_HEIGHT));
+    let header = header_rect(window);
     let layout = HeaderLayout::new(painter, header, chrome);
 
     let hover = hover_fade(ui, window, chrome);
@@ -213,19 +228,23 @@ pub fn frame_controls(ui: &Ui, window: Rect, chrome: &Chrome) -> Option<Intent> 
 }
 
 /// Where each resize anchor grabs the pointer: the whole margin plus a few points into
-/// the panel, corners taking precedence over edges. The rects don't overlap.
+/// the panel, corners taking precedence over edges. The rects don't overlap each other
+/// or the header's buttons, which are sensed first and would lose presses to them.
 pub fn anchor_hit_rects(window: Rect) -> [(ResizeDirection, Rect); 8] {
     use ResizeDirection::*;
     let corner = MARGIN + BORDER_W + 9.0;
     let edge = MARGIN + BORDER_W + 5.0;
     let (l, r, t, b) = (window.left(), window.right(), window.top(), window.bottom());
     let square = |x: f32, y: f32| Rect::from_min_size(pos2(x, y), Vec2::splat(corner));
+    let close = close_rect(header_rect(window));
+    let north_bottom = (t + edge).min(close.top());
+    let north_east = Rect::from_min_max(pos2((r - corner).max(close.right()), t), pos2(r, t + corner));
     [
         (NorthWest, square(l, t)),
-        (NorthEast, square(r - corner, t)),
+        (NorthEast, north_east),
         (SouthWest, square(l, b - corner)),
         (SouthEast, square(r - corner, b - corner)),
-        (North, Rect::from_min_max(pos2(l + corner, t), pos2(r - corner, t + edge))),
+        (North, Rect::from_min_max(pos2(l + corner, t), pos2(north_east.left(), north_bottom))),
         (South, Rect::from_min_max(pos2(l + corner, b - edge), pos2(r - corner, b))),
         (West, Rect::from_min_max(pos2(l, t + corner), pos2(l + edge, b - corner))),
         (East, Rect::from_min_max(pos2(r - edge, t + corner), pos2(r, b - corner))),
@@ -411,8 +430,7 @@ impl HeaderLayout {
         let title = title_galley(painter, header.width());
         let title_pos = pos2(header.left() + PAD_LEFT, cy - title.size().y / 2.0);
         let title_right = title_pos.x + title.size().x;
-        let close =
-            Rect::from_center_size(pos2(header.right() - PAD_RIGHT - GEAR_SIZE / 2.0, cy), Vec2::splat(GEAR_SIZE));
+        let close = close_rect(header);
         let gear = close.translate(vec2(-(GEAR_SIZE + BUTTON_GAP), 0.0));
 
         let badges = place_badges(painter, chrome.badges, gear.left() - 8.0, title_right + ITEM_GAP, cy);
@@ -621,7 +639,10 @@ mod tests {
     fn anchor_hit_areas_cover_the_margin_without_overlapping() {
         let win = window(680.0, 170.0);
         let hits = anchor_hit_rects(win);
+        let close = close_rect(header_rect(win));
+        let buttons = close.union(close.translate(vec2(-(GEAR_SIZE + BUTTON_GAP), 0.0)));
         for (i, (_, a)) in hits.iter().enumerate() {
+            assert!(a.intersect(buttons).area() <= 0.0, "{a:?} covers the gear or close button");
             for (_, b) in &hits[i + 1..] {
                 assert!(a.intersect(*b).area() <= 0.0, "{a:?} overlaps {b:?}");
             }
@@ -693,6 +714,9 @@ mod tests {
 
         let narrow = header_for(500.0, &chrome(&[], Some("1:55.992")));
         assert_eq!(narrow.len(), 3, "no legend below 540: {narrow:?}");
+
+        let smallest = header_for(MIN_PANEL.x, &chrome(&["REF: OTHER LAYOUT"], None));
+        assert_eq!(smallest.len(), 4, "the badge fits at the minimum width: {smallest:?}");
 
         let tiny = header_for(300.0, &chrome(&[], None));
         assert!(tiny[0].width() < title_w, "short title");

@@ -13,12 +13,21 @@ pub const BRAKE_ON: f32 = 0.05;
 pub const BRAKE_OFF: f32 = 0.02;
 /// iRacing's telemetry rate, and the rate Garage 61 exports at.
 pub const TELEMETRY_HZ: f64 = 60.0;
-/// Throttle pulses this short, rising from and falling back to [`BLIP_FLOOR`], are the
-/// car's auto-blip on a downshift (2–3 samples while the gear reads neutral), not the
-/// driver: nobody presses and releases a pedal that fast.
-pub const BLIP_MAX_S: f64 = 0.12;
-/// A blip starts and ends at or below this throttle.
+/// Without a Gear column: a throttle pulse this short that jumps up from and falls back to
+/// [`BLIP_FLOOR`] is taken for an auto-blip. With one, blips are found by the downshifts.
+pub const BLIP_MAX_S: f64 = 0.2;
+/// Floor for [`BLIP_MAX_S`] pulses.
 pub const BLIP_FLOOR: f32 = 0.05;
+/// A blip's first sample jumps at least this much; a driver's foot rises far slower
+/// (under 0.05 a sample), so short real presses aren't mistaken for blips.
+const BLIP_JUMP: f32 = 0.15;
+/// While a blip is building, each sample rises at least this much.
+const BLIP_RISE: f32 = 0.05;
+/// Samples before the gear reads neutral that a blip may already have started.
+const BLIP_LEAD: usize = 2;
+/// Seconds after the new gear engages that a blip may take to die away (Mustang GT3,
+/// Mercedes-AMG GT3: a 0.19→0.70 ramp and a decay over up to 11 samples).
+const BLIP_DECAY_S: f64 = 0.2;
 /// Columns a reference file must have.
 pub const REQUIRED_COLUMNS: [&str; 3] = ["LapDistPct", "Brake", "Throttle"];
 
@@ -157,34 +166,85 @@ pub fn format_lap_time(sec: f64) -> String {
     format!("{}:{:02}.{:03}", m, rem / 1000, rem % 1000)
 }
 
-/// Flattens the auto-blips in a throttle trace (see [`BLIP_MAX_S`]): Garage 61 exports
-/// iRacing's `Throttle`, which includes them, while the live overlay reads the pedal
-/// (`ThrottleRaw`). Each blip becomes a straight line between the samples either side.
-/// Returns how many were removed.
-pub fn remove_blips(throttle: &mut [f32], hz: f64) -> usize {
+/// Flattens the auto-blips in a throttle trace. Garage 61 exports iRacing's `Throttle`,
+/// where the car opens the throttle itself on every downshift while the gearbox reads
+/// neutral; the live overlay reads the pedal (`ThrottleRaw`), which doesn't show them.
+/// With `gear` (the export's Gear column) each downshift's blip is found directly; without
+/// it, short pulses that jump off the floor are taken instead (see [`BLIP_MAX_S`]). Each
+/// blip becomes a straight line between the driver's throttle either side. Returns how
+/// many were removed.
+pub fn remove_blips(throttle: &mut [f32], gear: Option<&[i32]>, hz: f64) -> usize {
+    match gear {
+        Some(gear) if gear.len() == throttle.len() && gear.contains(&0) => remove_downshift_blips(throttle, gear, hz),
+        _ => remove_short_pulses(throttle, hz),
+    }
+}
+
+/// Blips around each neutral stretch between a higher and a lower gear.
+fn remove_downshift_blips(throttle: &mut [f32], gear: &[i32], hz: f64) -> usize {
+    let n = throttle.len();
+    let decay = (BLIP_DECAY_S * hz).round() as usize;
+    let mut removed = 0;
+    let mut i = 1;
+    while i < n {
+        if gear[i] != 0 || gear[i - 1] <= 0 {
+            i += 1;
+            continue;
+        }
+        let neutral = i;
+        while i < n && gear[i] == 0 {
+            i += 1;
+        }
+        let engaged = i;
+        if engaged == n || gear[engaged] <= 0 || gear[engaged] >= gear[neutral - 1] {
+            continue; // an upshift, or the lap ends mid-shift
+        }
+        // It may start a sample or two before the gear reads neutral…
+        let mut start = neutral;
+        while start > 1 && neutral - start < BLIP_LEAD && throttle[start - 1] > throttle[start - 2] + BLIP_RISE {
+            start -= 1;
+        }
+        // …and dies away after the new gear engages: it ends where the throttle stops falling.
+        let mut end = engaged;
+        while end + 1 < n && end < engaged + decay && throttle[end + 1] < throttle[end] - 0.01 {
+            end += 1;
+        }
+        let before = throttle[start - 1];
+        if throttle[start..end].iter().all(|&v| v <= before + 0.02) {
+            continue; // nothing rose: no blip on this shift
+        }
+        bridge(throttle, start - 1, end);
+        removed += 1;
+    }
+    removed
+}
+
+/// Without gears: pulses from the floor that jump at once and are gone within [`BLIP_MAX_S`].
+fn remove_short_pulses(throttle: &mut [f32], hz: f64) -> usize {
     let longest = (BLIP_MAX_S * hz).round().max(1.0) as usize;
     let mut removed = 0;
     let mut i = 1;
     while i < throttle.len() {
         if throttle[i] > BLIP_FLOOR && throttle[i - 1] <= BLIP_FLOOR {
-            let end = (i..throttle.len()).find(|&j| throttle[j] <= BLIP_FLOOR);
-            match end {
-                Some(end) if end - i <= longest => {
-                    let (a, b) = (throttle[i - 1], throttle[end]);
-                    let span = (end - i + 1) as f32;
-                    for (k, v) in throttle[i..end].iter_mut().enumerate() {
-                        *v = a + (b - a) * (k + 1) as f32 / span;
-                    }
-                    removed += 1;
-                    i = end;
-                }
-                Some(end) => i = end,
-                None => break,
+            let Some(end) = (i..throttle.len()).find(|&j| throttle[j] <= BLIP_FLOOR) else { break };
+            if end - i <= longest && throttle[i] - throttle[i - 1] >= BLIP_JUMP {
+                bridge(throttle, i - 1, end);
+                removed += 1;
             }
+            i = end;
         }
         i += 1;
     }
     removed
+}
+
+/// A straight line from sample `from` to sample `to`, replacing those between.
+fn bridge(values: &mut [f32], from: usize, to: usize) {
+    let (a, b) = (values[from], values[to]);
+    let span = (to - from) as f32;
+    for (k, v) in values[from + 1..to].iter_mut().enumerate() {
+        *v = a + (b - a) * (k + 1) as f32 / span;
+    }
 }
 
 /// Brake zones with hysteresis ([`BRAKE_ON`] / [`BRAKE_OFF`]).
@@ -231,9 +291,11 @@ pub fn parse_garage61_csv(text: &str, file_name: &str) -> Result<Lap, LapError> 
     let (i_pct, i_brake, i_thr) = (col("LapDistPct").unwrap(), col("Brake").unwrap(), col("Throttle").unwrap());
     let i_spd = col("Speed");
     let (i_lat, i_lon) = (col("Lat"), col("Lon"));
+    let i_gear = col("Gear");
 
     let (mut pct, mut brake, mut throttle, mut speed) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut latlon: Vec<Option<(f64, f64)>> = Vec::new();
+    let mut gear: Vec<i32> = Vec::new();
     for line in lines {
         if line.is_empty() {
             continue;
@@ -246,6 +308,7 @@ pub fn parse_garage61_csv(text: &str, file_name: &str) -> Result<Lap, LapError> 
         throttle.push(t.clamp(0.0, 1.0) as f32);
         speed.push(i_spd.and_then(num).unwrap_or(0.0) as f32);
         latlon.push(i_lat.and_then(num).zip(i_lon.and_then(num)).filter(|&(la, lo)| la != 0.0 || lo != 0.0));
+        gear.push(i_gear.and_then(num).map_or(-1, |g| g as i32));
     }
 
     // Exports often carry a sample or two from the neighbouring lap: keep the longest run
@@ -266,6 +329,7 @@ pub fn parse_garage61_csv(text: &str, file_name: &str) -> Result<Lap, LapError> 
     keep_range(&mut throttle, &keep);
     keep_range(&mut speed, &keep);
     keep_range(&mut latlon, &keep);
+    keep_range(&mut gear, &keep);
     if (pct.len() as f64) < TELEMETRY_HZ * 10.0 {
         return Err(LapError::TooShort);
     }
@@ -284,7 +348,7 @@ pub fn parse_garage61_csv(text: &str, file_name: &str) -> Result<Lap, LapError> 
     }
     let lap_time = meta.lap_time.unwrap_or(n as f64 / hz);
     let track_length_est = i_spd.map(|_| speed.iter().map(|&v| v as f64 / hz).sum::<f64>());
-    remove_blips(&mut throttle, hz);
+    remove_blips(&mut throttle, i_gear.map(|_| gear.as_slice()), hz);
     let start_latlon = pct.iter().zip(&latlon).take_while(|(p, _)| **p < 0.01).find_map(|(_, ll)| *ll);
 
     Ok(Lap {
@@ -520,31 +584,72 @@ mod tests {
         assert_eq!(again.zones.len(), lap.zones.len());
     }
 
-    #[test]
-    fn downshift_blips_are_flattened() {
-        let lap = parse_garage61_csv(SAMPLE, G61_NAME).unwrap();
-        // The lap's blips (52-75% for 2-3 samples, all under braking) are gone. What's
-        // left under braking is the driver easing off the throttle as they brake.
-        let under_braking = lap.throttle.iter().zip(&lap.brake).filter(|&(&t, &b)| b > 0.4 && t > 0.3);
-        assert_eq!(under_braking.count(), 0);
-        assert_eq!(remove_blips(&mut lap.throttle.clone(), lap.hz), 0, "nothing left to remove");
-        // Real throttle is untouched: the lap still hits full throttle, and as often.
-        let full = lap.throttle.iter().filter(|&&t| t >= 0.999).count();
-        assert!(full > 3000, "{full}");
+    /// The sample lap's raw Throttle and Gear columns.
+    fn raw_throttle_and_gear() -> (Vec<f32>, Vec<i32>) {
+        let mut lines = SAMPLE.lines();
+        let header: Vec<&str> = lines.next().unwrap().split(',').collect();
+        let (it, ig) =
+            (header.iter().position(|&h| h == "Throttle").unwrap(), header.iter().position(|&h| h == "Gear").unwrap());
+        let rows: Vec<Vec<&str>> = lines.map(|l| l.split(',').collect()).collect();
+        let n = rows.len() - 1; // the last row is the next lap's
+        let t = rows[..n].iter().map(|r| r[it].parse::<f32>().unwrap().clamp(0.0, 1.0)).collect();
+        let g = rows[..n].iter().map(|r| r[ig].parse().unwrap()).collect();
+        (t, g)
     }
 
     #[test]
-    fn blip_removal_keeps_real_throttle() {
+    fn downshift_blips_are_flattened_and_nothing_else() {
+        let lap = parse_garage61_csv(SAMPLE, G61_NAME).unwrap();
+        let (raw, gear) = raw_throttle_and_gear();
+        let under_braking = lap.throttle.iter().zip(&lap.brake).filter(|&(&t, &b)| b > 0.4 && t > 0.3);
+        assert_eq!(under_braking.count(), 0, "every blip under braking is gone");
+        // Only samples next to a shift through neutral change.
+        for (i, (&t, &r)) in lap.throttle.iter().zip(&raw).enumerate() {
+            if (t - r).abs() > 1e-6 {
+                let near = gear[i.saturating_sub(3)..(i + 15).min(gear.len())].contains(&0);
+                assert!(near, "sample {i} changed ({r} -> {t}) away from any shift");
+            }
+        }
+        // Row 3664: 5th to 4th off the throttle, a 52-54% blip for two samples, now flat.
+        let i = (3600..3700).find(|&i| raw[i] > 0.5 && gear[i] == 0).unwrap();
+        assert_eq!(lap.throttle[i..i + 2], [0.0, 0.0]);
+    }
+
+    #[test]
+    fn ramped_blips_from_other_cars_are_flattened() {
+        // Mustang GT3 / Mercedes-AMG GT3: the blip ramps up a sample before neutral shows
+        // and decays for three after the new gear engages.
+        let mut t = vec![0.0; 6];
+        t.extend([0.194, 0.428, 0.661, 0.70, 0.70, 0.583, 0.35, 0.117, 0.0, 0.0, 0.0]);
+        let mut g = vec![2; 7];
+        g.extend([0, 0, 0, 0, 1, 1, 1, 1, 1, 1]);
+        assert_eq!(remove_blips(&mut t, Some(&g), 60.0), 1);
+        assert!(t.iter().all(|&v| v < 0.01), "{t:?}");
+
+        // A blip on trail throttle runs between the driver's 23% before and 17% after.
+        let mut t = vec![0.25, 0.24, 0.227, 0.521, 0.417, 0.17, 0.17];
+        let g = [5, 5, 5, 0, 0, 4, 4];
+        assert_eq!(remove_blips(&mut t, Some(&g), 60.0), 1);
+        assert!(t[3] < 0.227 && t[3] > 0.17 && t[4] < t[3] && t[4] > 0.17, "{t:?}");
+
+        // Upshifts at full throttle are left alone.
+        let mut t = vec![1.0; 10];
+        let g = [3, 3, 3, 0, 0, 4, 4, 4, 4, 4];
+        assert_eq!(remove_blips(&mut t, Some(&g), 60.0), 0);
+        assert!(t.iter().all(|&v| v == 1.0));
+    }
+
+    #[test]
+    fn without_gears_only_sudden_short_pulses_go() {
         let mut t = vec![0.0, 0.0, 0.52, 0.65, 0.0, 0.0, 0.03, 0.75, 0.04, 0.0];
-        t.extend(std::iter::repeat_n(0.8, 30)); // a real application, 0.5 s
-        t.push(0.0);
+        // A driver's short, slow press: 0.05 a sample up to 0.3 and back, 0.2 s.
+        t.extend([0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.25, 0.2, 0.15, 0.1, 0.05, 0.0]);
         let before = t.clone();
-        assert_eq!(remove_blips(&mut t, 60.0), 2);
+        assert_eq!(remove_blips(&mut t, None, 60.0), 2);
         assert!(t[2] <= BLIP_FLOOR && t[3] <= BLIP_FLOOR, "{t:?}");
         assert!((t[7] - 0.035).abs() < 1e-6, "between its neighbours: {}", t[7]);
-        assert_eq!(t[10..], before[10..], "the long press stays");
-        // A trace that starts or ends on the throttle isn't a blip.
+        assert_eq!(t[10..], before[10..], "the slow press stays");
         let mut edges = vec![1.0, 1.0, 0.0, 0.0, 0.9];
-        assert_eq!(remove_blips(&mut edges, 60.0), 0);
+        assert_eq!(remove_blips(&mut edges, None, 60.0), 0, "a trace ending on the throttle");
     }
 }

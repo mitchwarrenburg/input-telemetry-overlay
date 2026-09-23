@@ -60,8 +60,10 @@ A lap from another car on the same layout is still drawn, with a "Different car"
 lap from another track or layout is hidden, because its distances wouldn't line up.
 
 Garage 61 exports the car's throttle, which includes the auto-blip on every downshift: a
-50-75% spike for two or three samples. Those are flattened when a lap is loaded, and the
-live line reads your pedal (`ThrottleRaw`), so neither side shows them.
+spike of 50-75% that lasts from a few samples (Ferrari 296) to a fifth of a second
+(Mustang, AMG). When a lap is loaded, the blip around each downshift in its Gear column is
+flattened into a line between your throttle before and after it. The live line reads your
+pedal (`ThrottleRaw`), which never has them.
 
 ## Using the overlay
 
