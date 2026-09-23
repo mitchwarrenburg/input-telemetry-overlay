@@ -1,6 +1,6 @@
 //! User settings, persisted as JSON in the app's config folder.
 
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -27,7 +27,7 @@ pub enum Axis {
     Time,
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum SettingsTab {
     Display,
@@ -36,13 +36,19 @@ pub enum SettingsTab {
     Reference,
 }
 
-/// Overlay window position and size, in points (logical pixels).
+/// Overlay window position and size. The position is the window's outer top-left in
+/// physical pixels (`px`), which says which monitor it's on; the size is in points, so
+/// it looks the same on any monitor.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct WindowRect {
     pub x: f32,
     pub y: f32,
     pub w: f32,
     pub h: f32,
+    /// False in files from before positions were saved in pixels: `x` and `y` are
+    /// points there, as the primary monitor counts them.
+    #[serde(default)]
+    pub px: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -156,13 +162,19 @@ impl Settings {
     }
 }
 
-/// Writes via a temp file and rename, so a crash never leaves a half-written file.
+/// Writes a temp file, flushes it to disk and renames it over `path`, so a crash or a
+/// power loss leaves either the old file or the new one, never a partial or empty one.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
+    let mut file = std::fs::File::create(&tmp)?;
+    file.write_all(bytes)?;
+    // The rename is journaled but the data isn't: without this, NTFS can keep the
+    // rename and lose the contents.
+    file.sync_all()?;
+    drop(file);
     std::fs::rename(&tmp, path)
 }
 
@@ -177,11 +189,15 @@ mod tests {
         let s = Settings {
             bg_opacity: 35.0,
             axis: Axis::Time,
-            window: Some(WindowRect { x: 10.0, y: 20.0, w: 680.0, h: 170.0 }),
+            window: Some(WindowRect { x: 2100.0, y: 300.0, w: 680.0, h: 170.0, px: true }),
             ..Default::default()
         };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);
+
+        std::fs::write(&path, r#"{"window": {"x": 10, "y": 20, "w": 680, "h": 170}}"#).unwrap();
+        let old = WindowRect { x: 10.0, y: 20.0, w: 680.0, h: 170.0, px: false };
+        assert_eq!(Settings::load(&path).window, Some(old), "an older file's points");
 
         std::fs::write(&path, r#"{"bg_opacity": 500, "label_mode": "live", "unknown": 1}"#).unwrap();
         let s = Settings::load(&path);
@@ -197,6 +213,16 @@ mod tests {
         std::fs::write(&path, "{not json").unwrap();
         assert_eq!(Settings::load(&path), Settings::default());
         assert_eq!(Settings::load(&dir.path().join("missing.json")), Settings::default());
+    }
+
+    #[test]
+    fn write_atomic_replaces_the_file_and_leaves_no_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new").join("library.json");
+        write_atomic(&path, b"first").unwrap();
+        write_atomic(&path, b"second").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        assert!(!path.with_extension("tmp").exists());
     }
 
     #[test]

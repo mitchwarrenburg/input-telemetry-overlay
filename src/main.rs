@@ -14,10 +14,14 @@ fn main() {
 
 #[cfg(windows)]
 mod start {
+    use std::ffi::{OsStr, OsString};
+    use std::path::PathBuf;
     use std::process::ExitCode;
+    use std::sync::OnceLock;
 
     use ito::app::LaunchOptions;
-    use ito::settings::SettingsTab;
+    use ito::platform::{self, Instance};
+    use ito::settings::{self, SettingsTab};
 
     const USAGE: &str = "\
 Input Telemetry Overlay: your throttle and brake against a Garage 61 reference lap.
@@ -25,7 +29,8 @@ Input Telemetry Overlay: your throttle and brake against a Garage 61 reference l
 Usage: input-telemetry-overlay [options] [lap.csv ...]
 
 CSV files given on the command line (or dropped on the program) are added to the
-lap library, and the last one becomes the reference.
+lap library, and the last one becomes the reference. When the overlay is already
+running for the same data folder, it takes them instead.
 
 Options:
   --demo                       Drive the simulated car, even if iRacing is running
@@ -36,23 +41,78 @@ Options:
   -h, --help                   Show this help";
 
     pub fn main() -> ExitCode {
-        let opts = match parse_args(std::env::args().skip(1)) {
+        let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+        let opts = match parse_args(args.iter().cloned()) {
             Ok(Command::Run(opts)) => opts,
             Ok(Command::Help) => {
-                println!("{USAGE}");
+                report(USAGE, false);
                 return ExitCode::SUCCESS;
             }
             Err(e) => {
-                eprintln!("{e}\n\n{USAGE}");
+                logger::init(&data_dir_arg(&args).unwrap_or_else(settings::app_dir));
+                log::error!("{e}");
+                report(&format!("{e}\n\n{USAGE}"), true);
                 return ExitCode::from(2);
             }
         };
         logger::init(&opts.data_dir());
+        let instance = match Instance::claim(&opts.data_dir()) {
+            Ok(Some(instance)) => Some(instance),
+            Ok(None) => return hand_over(&opts),
+            Err(e) => {
+                log::warn!("Couldn't check for an overlay already running: {e}");
+                None
+            }
+        };
         // `run` logs its error.
-        match ito::app::run(opts) {
+        match ito::app::run(opts, instance) {
             Ok(()) => ExitCode::SUCCESS,
             Err(_) => ExitCode::FAILURE,
         }
+    }
+
+    /// An overlay already runs for this data folder: it takes this launch's laps (or
+    /// shows its settings), and this launch ends.
+    fn hand_over(opts: &LaunchOptions) -> ExitCode {
+        match platform::hand_over(&opts.data_dir(), &opts.import) {
+            Ok(()) => {
+                log::info!("Handed {:?} to the overlay already running", opts.import);
+                if console() {
+                    let what = match opts.import.len() {
+                        0 => "showed its settings".to_owned(),
+                        1 => "gave it the lap".to_owned(),
+                        n => format!("gave it the {n} laps"),
+                    };
+                    println!("Input Telemetry Overlay is already running for this data folder: {what}.");
+                }
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                let message = format!("Couldn't reach the overlay that's already running: {e}");
+                log::error!("{message}");
+                report(&message, true);
+                ExitCode::FAILURE
+            }
+        }
+    }
+
+    /// Shows help or an error on the console the program was started from, or else in
+    /// a message box (e.g. started from Explorer).
+    fn report(text: &str, error: bool) {
+        if !console() {
+            platform::message_box("Input Telemetry Overlay", text, error);
+        } else if error {
+            eprintln!("{text}");
+        } else {
+            println!("{text}");
+        }
+    }
+
+    /// There's a console to print to. A release build is a GUI program without one of
+    /// its own: it borrows the console it was started from, if any.
+    fn console() -> bool {
+        static ATTACHED: OnceLock<bool> = OnceLock::new();
+        cfg!(debug_assertions) || *ATTACHED.get_or_init(platform::attach_parent_console)
     }
 
     #[derive(Debug)]
@@ -61,33 +121,41 @@ Options:
         Help,
     }
 
-    fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Command, String> {
+    /// Options are matched as UTF-8; anything else is a lap to import (any file name
+    /// Windows allows) or, where an option or a tab is expected, an error.
+    fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Command, String> {
         let mut opts = LaunchOptions::default();
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
-            let mut value = || args.next().ok_or_else(|| format!("{arg} needs a value"));
-            match arg.as_str() {
-                "-h" | "--help" => return Ok(Command::Help),
-                "--demo" => opts.demo = true,
-                "--settings" => opts.open_settings = Some(parse_tab(&value()?)?),
-                "--screenshot" => opts.screenshot = Some(value()?.into()),
-                "--settings-screenshot" => opts.settings_screenshot = Some(value()?.into()),
-                "--data-dir" => opts.data_dir = Some(value()?.into()),
-                other if other.starts_with('-') => return Err(format!("Unknown option: {other}")),
-                path => opts.import.push(path.into()),
+            let shown = arg.to_string_lossy().into_owned();
+            let mut value = || args.next().ok_or_else(|| format!("{shown} needs a value"));
+            match arg.to_str() {
+                Some("-h" | "--help") => return Ok(Command::Help),
+                Some("--demo") => opts.demo = true,
+                Some("--settings") => opts.open_settings = Some(parse_tab(&value()?)?),
+                Some("--screenshot") => opts.screenshot = Some(value()?.into()),
+                Some("--settings-screenshot") => opts.settings_screenshot = Some(value()?.into()),
+                Some("--data-dir") => opts.data_dir = Some(value()?.into()),
+                _ if shown.starts_with('-') => return Err(format!("Unknown option: {shown}")),
+                _ => opts.import.push(arg.into()),
             }
         }
         Ok(Command::Run(opts))
     }
 
-    fn parse_tab(name: &str) -> Result<SettingsTab, String> {
-        match name.to_ascii_lowercase().as_str() {
-            "display" => Ok(SettingsTab::Display),
-            "labels" => Ok(SettingsTab::Labels),
-            "timing" => Ok(SettingsTab::Timing),
-            "reference" => Ok(SettingsTab::Reference),
-            _ => Err(format!("No settings tab called “{name}”")),
+    fn parse_tab(name: &OsStr) -> Result<SettingsTab, String> {
+        match name.to_str().map(str::to_ascii_lowercase).as_deref() {
+            Some("display") => Ok(SettingsTab::Display),
+            Some("labels") => Ok(SettingsTab::Labels),
+            Some("timing") => Ok(SettingsTab::Timing),
+            Some("reference") => Ok(SettingsTab::Reference),
+            _ => Err(format!("No settings tab called “{}”", name.to_string_lossy())),
         }
+    }
+
+    /// `--data-dir`'s value, so a mistake elsewhere on the command line is logged there.
+    fn data_dir_arg(args: &[OsString]) -> Option<PathBuf> {
+        args.windows(2).find(|pair| pair[0] == "--data-dir").map(|pair| PathBuf::from(&pair[1]))
     }
 
     /// A small `log` backend. Debug builds: this app's messages (and libraries'
@@ -176,7 +244,16 @@ Options:
         use super::*;
 
         fn parse(args: &[&str]) -> Result<Command, String> {
-            parse_args(args.iter().map(|s| s.to_string()))
+            parse_args(args.iter().map(OsString::from))
+        }
+
+        /// `lap<unpaired surrogate>.csv`: a legal Windows file name that isn't Unicode.
+        fn not_unicode(prefix: &str) -> OsString {
+            use std::os::windows::ffi::OsStringExt;
+            let mut wide: Vec<u16> = prefix.encode_utf16().collect();
+            wide.push(0xD800);
+            wide.extend(".csv".encode_utf16());
+            OsString::from_wide(&wide)
         }
 
         #[test]
@@ -213,8 +290,30 @@ Options:
         #[test]
         fn other_arguments_are_laps_to_import() {
             let Ok(Command::Run(o)) = parse(&["a.csv", "--demo", r"C:\laps\b.csv"]) else { panic!() };
-            assert_eq!(o.import, [std::path::PathBuf::from("a.csv"), r"C:\laps\b.csv".into()]);
+            assert_eq!(o.import, [PathBuf::from("a.csv"), r"C:\laps\b.csv".into()]);
             assert!(o.demo);
+        }
+
+        #[test]
+        fn non_unicode_arguments_are_paths_or_errors() {
+            let lap = not_unicode("lap");
+            let Ok(Command::Run(o)) = parse_args([lap.clone(), "--data-dir".into(), not_unicode("dir")]) else {
+                panic!()
+            };
+            assert_eq!(o.import, [PathBuf::from(&lap)]);
+            assert_eq!(o.data_dir, Some(PathBuf::from(not_unicode("dir"))));
+
+            let tab = parse_args(["--settings".into(), lap]).unwrap_err();
+            assert!(tab.starts_with("No settings tab called"), "{tab}");
+            let option = parse_args([not_unicode("--x")]).unwrap_err();
+            assert!(option.starts_with("Unknown option: --x"), "{option}");
+        }
+
+        #[test]
+        fn finds_the_data_dir_for_logging_a_bad_command_line() {
+            let args: Vec<OsString> = ["--settings", "audio", "--data-dir", "d"].map(OsString::from).into();
+            assert_eq!(data_dir_arg(&args), Some(PathBuf::from("d")));
+            assert_eq!(data_dir_arg(&args[..3]), None);
         }
     }
 }

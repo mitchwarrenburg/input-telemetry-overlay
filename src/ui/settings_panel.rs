@@ -37,9 +37,9 @@ pub enum ConnectionState {
 pub struct PanelContext<'a> {
     pub library: &'a Library,
     pub session: Option<&'a SessionInfo>,
-    /// The lap drawn as the reference and how it matches the session.
-    pub reference: Option<(&'a Lap, MatchStatus)>,
-    /// Library id of the reference; `None` for the bundled demo lap or no reference.
+    /// The Reference tab's card.
+    pub card: Option<RefCard<'a>>,
+    /// Library id of the chosen lap (highlighted in the list), whether it's drawn or not.
     pub active_id: Option<&'a str>,
     /// Last import/load error to show in the Reference tab.
     pub error: Option<&'a str>,
@@ -50,6 +50,28 @@ pub struct PanelContext<'a> {
     pub browsing: bool,
     /// Files are being dragged over the settings window (highlight the drop zone).
     pub file_hover: bool,
+    /// Tallest the window can be, points; a taller tab scrolls.
+    pub max_height: f32,
+}
+
+/// What the Reference tab's card shows.
+#[derive(Debug, Clone, Copy)]
+pub enum RefCard<'a> {
+    /// The chosen saved lap, drawn, and how it matches the session.
+    Saved(&'a Lap, MatchStatus),
+    /// The chosen saved lap while the demo draws the bundled lap in its place (the
+    /// saved one is for another track).
+    Waiting(&'a Lap),
+    /// The bundled lap the demo draws while no saved lap is chosen.
+    Bundled(&'a Lap, MatchStatus),
+}
+
+impl<'a> RefCard<'a> {
+    fn lap(self) -> &'a Lap {
+        match self {
+            RefCard::Saved(lap, _) | RefCard::Waiting(lap) | RefCard::Bundled(lap, _) => lap,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +85,9 @@ pub enum PanelAction {
     RemoveLap(String),
     /// Show no reference.
     ClearReference,
+    /// A lock/unlock shortcut was picked: register it, even when it's the current one
+    /// (registering it may have failed before).
+    SetHotkey(String),
     ResetLayout,
     /// Settings back to defaults (keeps window position, library and hotkey).
     ResetAll,
@@ -71,7 +96,8 @@ pub enum PanelAction {
 
 pub struct PanelOutput {
     pub actions: Vec<PanelAction>,
-    /// Height the content needs, points; the window is resized to it.
+    /// Height the content needs without scrolling, points; the window is resized to it
+    /// (up to [`PanelContext::max_height`]).
     pub desired_height: f32,
 }
 
@@ -85,6 +111,11 @@ const RADIUS: f32 = 12.0;
 const LAP_ROW_HEIGHT: f32 = 46.0;
 /// The saved-laps list scrolls past this height (three and a half rows).
 const LAPS_MAX_HEIGHT: f32 = 3.5 * LAP_ROW_HEIGHT + 3.0 * ROW_GAP;
+/// "Reset to defaults" and the connection status: 1 px line, padding 9 / 11 around a
+/// 17 px line, 1 px border.
+const FOOT_HEIGHT: f32 = 1.0 + 9.0 + LINE_SMALL + 11.0 + 1.0;
+/// Where a pending "Remove?" (a lap id) is kept.
+const PENDING_REMOVE: &str = "ito_settings_pending_remove";
 
 const TABS: [(SettingsTab, &str); 4] = [
     (SettingsTab::Display, "Display"),
@@ -115,7 +146,8 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, cx: &PanelContext) -> Pa
     Frame::new().inner_margin(Margin::symmetric(1, 0)).show(&mut panel, |ui| {
         ui.add(TabBar::new(&mut settings.tab, &TABS));
     });
-    tab_body(&mut panel, settings, cx, &mut actions);
+    let body_max = cx.max_height - panel.min_rect().height() - FOOT_HEIGHT;
+    let scrolled_off = tab_body(&mut panel, settings, cx, &mut actions, body_max);
     foot(&mut panel, cx.connection, &mut actions);
 
     let rect = Rect::from_min_size(origin, vec2(WIDTH, panel.min_rect().height()));
@@ -125,7 +157,14 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, cx: &PanelContext) -> Pa
     if ui.input(|i| i.key_pressed(Key::Escape)) {
         actions.push(PanelAction::Close);
     }
-    PanelOutput { actions, desired_height: rect.height() }
+    PanelOutput { actions, desired_height: rect.height() + scrolled_off }
+}
+
+/// Forgets what the panel was in the middle of: a shortcut being picked, a pending
+/// "Remove?". Call when its window closes or opens, so neither survives unseen.
+pub fn reset(ctx: &egui::Context) {
+    widgets::cancel_shortcut_capture(ctx);
+    ctx.data_mut(|d| d.remove::<String>(Id::new(PENDING_REMOVE)));
 }
 
 /// "OVERLAY SETTINGS" and the close button.
@@ -141,17 +180,43 @@ fn head(ui: &mut Ui, actions: &mut Vec<PanelAction>) {
     }
 }
 
-fn tab_body(ui: &mut Ui, settings: &mut Settings, cx: &PanelContext, actions: &mut Vec<PanelAction>) {
-    Frame::new().inner_margin(Margin { left: 15, right: 15, top: 13, bottom: 14 }).show(ui, |ui| {
-        ui.set_width(WIDTH - 2.0 * PAD_X);
-        ui.spacing_mut().item_spacing.y = GAP;
-        match settings.tab {
-            SettingsTab::Display => display_tab(ui, settings, cx, actions),
-            SettingsTab::Labels => labels_tab(ui, settings),
-            SettingsTab::Timing => timing_tab(ui, settings),
-            SettingsTab::Reference => reference_tab(ui, settings, cx, actions),
-        }
-    });
+/// The open tab, scrolling when it's taller than `max_height`. Returns how much of it
+/// is scrolled out of view.
+fn tab_body(
+    ui: &mut Ui,
+    settings: &mut Settings,
+    cx: &PanelContext,
+    actions: &mut Vec<PanelAction>,
+    max_height: f32,
+) -> f32 {
+    ui.scope(|ui| {
+        // A thin bar in the right-hand padding; it takes no width from the content.
+        ui.spacing_mut().scroll = ScrollStyle {
+            bar_width: 4.0,
+            floating_width: 4.0,
+            bar_outer_margin: 3.0,
+            dormant_handle_opacity: 0.6,
+            ..ScrollStyle::floating()
+        };
+        let out = ScrollArea::vertical()
+            .id_salt(("settings_body", settings.tab))
+            .max_height(max_height.max(0.0))
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                Frame::new().inner_margin(Margin { left: 15, right: 15, top: 13, bottom: 14 }).show(ui, |ui| {
+                    ui.set_width(WIDTH - 2.0 * PAD_X);
+                    ui.spacing_mut().item_spacing.y = GAP;
+                    match settings.tab {
+                        SettingsTab::Display => display_tab(ui, settings, cx, actions),
+                        SettingsTab::Labels => labels_tab(ui, settings),
+                        SettingsTab::Timing => timing_tab(ui, settings),
+                        SettingsTab::Reference => reference_tab(ui, settings, cx, actions),
+                    }
+                });
+            });
+        (out.content_size.y - out.inner_rect.height()).max(0.0)
+    })
+    .inner
 }
 
 /// Section heading; it sits 7 px above its first row (CSS `margin-bottom: -6px`).
@@ -187,7 +252,7 @@ fn display_tab(ui: &mut Ui, s: &mut Settings, cx: &PanelContext, actions: &mut V
     row(ui, |ui| {
         widgets::row_label(ui, "Lock / unlock shortcut");
         if let Some(spec) = widgets::shortcut_field(ui, &s.unlock_hotkey) {
-            s.unlock_hotkey = spec;
+            actions.push(PanelAction::SetHotkey(spec));
         }
         if let Some(e) = cx.hotkey_error {
             widgets::error_text(ui, e);
@@ -275,14 +340,14 @@ fn timing_tab(ui: &mut Ui, s: &mut Settings) {
 // ---- Reference ----
 
 fn reference_tab(ui: &mut Ui, s: &mut Settings, cx: &PanelContext, actions: &mut Vec<PanelAction>) {
-    if let Some((lap, status)) = cx.reference {
-        reference_card(ui, lap, status, cx, actions);
+    if let Some(card) = cx.card {
+        reference_card(ui, card, cx, actions);
     }
     saved_laps(ui, cx, actions);
-    let title = if cx.reference.is_some() { "Drop another lap here to replace it" } else { "Drop a Garage 61 lap CSV" };
+    let title = if cx.card.is_some() { "Drop another lap here to replace it" } else { "Drop a Garage 61 lap CSV" };
     let drop_zone = DropZone::new(title)
         .hint("Needs LapDistPct, Brake and Throttle columns")
-        .compact(cx.reference.is_some())
+        .compact(cx.card.is_some())
         .highlight(cx.file_hover);
     if ui.add_enabled(!cx.browsing, drop_zone).clicked() {
         actions.push(PanelAction::Browse);
@@ -299,30 +364,53 @@ fn reference_tab(ui: &mut Ui, s: &mut Settings, cx: &PanelContext, actions: &mut
     widgets::hint(ui, "Lined up by lap distance, so a lap of any pace matches corner for corner.");
 }
 
-/// The lap being drawn: who, what, how it matches, and Replace / Remove.
-fn reference_card(ui: &mut Ui, lap: &Lap, status: MatchStatus, cx: &PanelContext, actions: &mut Vec<PanelAction>) {
+/// The chosen lap (or the bundled one): who, what, how it matches, and Replace /
+/// Remove. The bundled lap isn't a choice, so it has no Remove.
+fn reference_card(ui: &mut Ui, card: RefCard, cx: &PanelContext, actions: &mut Vec<PanelAction>) {
+    let lap = card.lap();
     card_frame().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.spacing_mut().item_spacing = vec2(6.0, 5.0);
-        let name = match cx.active_id {
-            None => "Sample lap (bundled)".to_owned(),
-            Some(_) => lap.meta.driver.clone().unwrap_or_else(|| lap.meta.file_name.clone()),
+        let name = match card {
+            RefCard::Bundled(..) => "Sample lap (bundled)".to_owned(),
+            RefCard::Saved(..) | RefCard::Waiting(_) => {
+                lap.meta.driver.clone().unwrap_or_else(|| lap.meta.file_name.clone())
+            }
         };
         card_title(ui, lap, &name);
         let sub = car_and_track(lap.meta.car.as_deref(), lap.meta.track.as_deref())
             .unwrap_or_else(|| "Car and track not in file name".to_owned());
         widgets::hint(ui, &sub);
-        card_meta(ui, &lap_stats(lap), StatusChip::long(ui, status));
+        let chip = match card {
+            RefCard::Saved(_, status) | RefCard::Bundled(_, status) => StatusChip::long(ui, status),
+            RefCard::Waiting(_) => StatusChip::new(ui, Icon::Ring, theme::UI_MUTED, "Not in the demo", theme::UI_MUTED),
+        };
+        card_meta(ui, &lap_stats(lap), chip);
+        if let RefCard::Waiting(lap) = card {
+            widgets::hint(ui, &waiting_note(lap, cx.session));
+        }
         ui.add_space(5.0);
         ui.horizontal(|ui| {
             if ui.add_enabled(!cx.browsing, Button::new("Replace…")).clicked() {
                 actions.push(PanelAction::Browse);
             }
-            if ui.add(Button::new("Remove").quiet()).clicked() {
+            if !matches!(card, RefCard::Bundled(..)) && ui.add(Button::new("Remove").quiet()).clicked() {
                 actions.push(PanelAction::ClearReference);
             }
         });
     });
+}
+
+/// When a lap the demo can't draw will be drawn, and what the demo shows meanwhile.
+fn waiting_note(lap: &Lap, demo: Option<&SessionInfo>) -> String {
+    let when = match lap.meta.track.as_deref() {
+        Some(track) => format!("Drawn when you drive {track}."),
+        None => "Drawn in your iRacing sessions.".to_owned(),
+    };
+    match demo.and_then(|s| s.track_display_name.as_deref()) {
+        Some(demo_track) => format!("{when} The demo runs {demo_track} with the bundled lap."),
+        None => format!("{when} The demo runs with the bundled lap."),
+    }
 }
 
 fn card_frame() -> Frame {
@@ -467,7 +555,7 @@ fn saved_laps(ui: &mut Ui, cx: &PanelContext, actions: &mut Vec<PanelAction>) {
         return;
     }
     section(ui, "Saved laps");
-    let pending_key = Id::new("ito_settings_pending_remove");
+    let pending_key = Id::new(PENDING_REMOVE);
     let mut pending: Option<String> = ui.data(|d| d.get_temp(pending_key));
     let mut handled = false;
     ui.scope(|ui| {
@@ -484,7 +572,10 @@ fn saved_laps(ui: &mut Ui, cx: &PanelContext, actions: &mut Vec<PanelAction>) {
                     let Some(event) = lap_row(ui, entry, status, active, confirming) else { continue };
                     handled = true;
                     match event {
-                        RowEvent::Select => actions.push(PanelAction::SelectLap(entry.id.clone())),
+                        RowEvent::Select => {
+                            actions.push(PanelAction::SelectLap(entry.id.clone()));
+                            pending = None;
+                        }
                         RowEvent::AskRemove => pending = Some(entry.id.clone()),
                         RowEvent::Remove => {
                             actions.push(PanelAction::RemoveLap(entry.id.clone()));
@@ -494,8 +585,8 @@ fn saved_laps(ui: &mut Ui, cx: &PanelContext, actions: &mut Vec<PanelAction>) {
                 }
             });
     });
-    // Escape (instead of closing the window) or a click anywhere else cancels a
-    // pending "Remove?".
+    // Escape (instead of closing the window) or a click anywhere else (another row
+    // included) cancels a pending "Remove?".
     let escaped = pending.is_some() && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
     if escaped || (!handled && ui.input(|i| i.pointer.any_click())) {
         pending = None;
@@ -604,8 +695,7 @@ fn error_box(ui: &mut Ui, message: &str, actions: &mut Vec<PanelAction>) {
 
 /// "Reset to defaults" and the connection status.
 fn foot(ui: &mut Ui, connection: ConnectionState, actions: &mut Vec<PanelAction>) {
-    // 1 px line, padding 9 / 11 around a 17 px line, 1 px border.
-    let (rect, _) = ui.allocate_exact_size(vec2(WIDTH, 1.0 + 9.0 + LINE_SMALL + 11.0 + 1.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(WIDTH, FOOT_HEIGHT), Sense::hover());
     ui.painter().hline(rect.x_range().shrink(1.0), rect.top() + 0.5, Stroke::new(1.0, theme::UI_LINE));
     let content =
         Rect::from_min_size(pos2(rect.left() + PAD_X, rect.top() + 10.0), vec2(WIDTH - 2.0 * PAD_X, LINE_SMALL));
@@ -634,6 +724,11 @@ fn connection_status(painter: &Painter, rect: Rect, connection: ConnectionState)
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
+    use eframe::egui::output::OutputEvent;
+    use eframe::egui::{Event, WidgetInfo};
+
     use super::*;
     use crate::demo;
     use crate::matching::{self, RefInfo};
@@ -679,62 +774,112 @@ mod tests {
         PanelContext {
             library,
             session: None,
-            reference: None,
+            card: None,
             active_id: None,
             error: None,
             hotkey_error: None,
             connection: ConnectionState::Waiting,
             browsing: false,
             file_hover: false,
+            max_height: f32::INFINITY,
         }
     }
 
-    /// A headless egui context with the app's fonts.
-    struct Harness(egui::Context);
+    /// A headless egui context with the app's fonts, `height` points tall.
+    struct Harness {
+        ctx: egui::Context,
+        height: f32,
+        /// Name and selected state of the widget that last gained keyboard focus.
+        focused: RefCell<Option<(String, Option<bool>)>>,
+    }
 
     impl Harness {
         fn new() -> Self {
+            Self::tall(900.0)
+        }
+
+        fn tall(height: f32) -> Self {
             let ctx = egui::Context::default();
             theme::install_fonts(&ctx);
-            Self(ctx)
+            Self { ctx, height, focused: RefCell::new(None) }
         }
 
         /// One frame. Pointer events hit the widgets laid out in the previous frame.
-        fn frame(&self, settings: &mut Settings, cx: &PanelContext, events: Vec<egui::Event>) -> PanelOutput {
-            let screen = Rect::from_min_size(Pos2::ZERO, vec2(WIDTH, 900.0));
+        fn frame(&self, settings: &mut Settings, cx: &PanelContext, events: Vec<Event>) -> PanelOutput {
+            let screen = Rect::from_min_size(Pos2::ZERO, vec2(WIDTH, self.height));
             let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
             let mut out = None;
-            self.0.run_ui(input, |ui| out = Some(show(ui, settings, cx))).textures_delta.clear();
+            let mut full = self.ctx.run_ui(input, |ui| out = Some(show(ui, settings, cx)));
+            full.textures_delta.clear();
+            for event in full.platform_output.events {
+                if let OutputEvent::FocusGained(WidgetInfo { label: Some(label), selected, .. }) = event {
+                    *self.focused.borrow_mut() = Some((label, selected));
+                }
+            }
             out.expect("ran a frame")
         }
 
         /// Two frames to settle, then `events`.
-        fn run(settings: &mut Settings, cx: &PanelContext, events: Vec<egui::Event>) -> PanelOutput {
+        fn run(settings: &mut Settings, cx: &PanelContext, events: Vec<Event>) -> PanelOutput {
             let h = Self::new();
-            h.frame(settings, cx, Vec::new());
-            h.frame(settings, cx, Vec::new());
+            h.settle(settings, cx);
             h.frame(settings, cx, events)
+        }
+
+        fn settle(&self, settings: &mut Settings, cx: &PanelContext) {
+            self.frame(settings, cx, Vec::new());
+            self.frame(settings, cx, Vec::new());
+        }
+
+        /// Presses Tab until the widget named `label` has keyboard focus; returns
+        /// whether it's selected (for list rows).
+        fn focus(&self, settings: &mut Settings, cx: &PanelContext, label: &str) -> Option<bool> {
+            for _ in 0..40 {
+                self.frame(settings, cx, vec![key(Key::Tab, Modifiers::NONE)]);
+                if let Some((name, selected)) = self.focused.borrow().clone()
+                    && name == label
+                {
+                    return selected;
+                }
+            }
+            panic!("nothing called {label:?} takes focus");
+        }
+
+        /// Names of the widgets Tab reaches, in order.
+        fn focusable(&self, settings: &mut Settings, cx: &PanelContext) -> Vec<String> {
+            let mut names: Vec<String> = Vec::new();
+            for _ in 0..40 {
+                self.frame(settings, cx, vec![key(Key::Tab, Modifiers::NONE)]);
+                let Some((name, _)) = self.focused.borrow().clone() else { continue };
+                if names.first() == Some(&name) {
+                    break;
+                }
+                names.push(name);
+            }
+            names
         }
     }
 
-    fn click(pos: Pos2) -> Vec<egui::Event> {
-        let button = |pressed| egui::Event::PointerButton {
+    fn click(pos: Pos2) -> Vec<Event> {
+        let button = |pressed| Event::PointerButton {
             pos,
             button: egui::PointerButton::Primary,
             pressed,
             modifiers: Default::default(),
         };
-        vec![egui::Event::PointerMoved(pos), button(true), button(false)]
+        vec![Event::PointerMoved(pos), button(true), button(false)]
     }
 
-    fn escape() -> Vec<egui::Event> {
-        vec![egui::Event::Key {
-            key: Key::Escape,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: Default::default(),
-        }]
+    fn key(key: Key, modifiers: Modifiers) -> Event {
+        Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers }
+    }
+
+    fn escape() -> Vec<Event> {
+        vec![key(Key::Escape, Modifiers::NONE)]
+    }
+
+    fn enter() -> Vec<Event> {
+        vec![key(Key::Enter, Modifiers::NONE)]
     }
 
     #[test]
@@ -743,26 +888,29 @@ mod tests {
         let session = demo::demo_session(&lap);
         let lib = library();
         let empty = Library::default();
-        // (reference drawn, library id, error, session): matching, bundled without a session, nothing.
+        let status = |session| matching::status(&RefInfo::from_lap(&lap), session);
+        assert_eq!(status(Some(&session)), MatchStatus::Match);
+        // (card, library id, error, session): matching, waiting behind the demo,
+        // bundled without a session, nothing.
         let states = [
-            (true, Some("a"), None, Some(&session)),
-            (true, None, Some("Missing column: Brake."), None),
-            (false, None, None, Some(&session)),
+            (Some(RefCard::Saved(&lap, status(Some(&session)))), Some("a"), None, Some(&session)),
+            (Some(RefCard::Waiting(&lap)), Some("c"), None, Some(&session)),
+            (Some(RefCard::Bundled(&lap, status(None))), None, Some("Missing column: Brake."), None),
+            (None, None, None, Some(&session)),
         ];
         for tab in TABS.map(|(t, _)| t) {
-            for (reference, active_id, error, session) in states {
-                let status = matching::status(&RefInfo::from_lap(&lap), session);
-                assert_eq!(status, if session.is_some() { MatchStatus::Match } else { MatchStatus::Unknown });
+            for (card, active_id, error, session) in states {
                 let cx = PanelContext {
-                    library: if reference { &lib } else { &empty },
+                    library: if card.is_some() { &lib } else { &empty },
                     session,
-                    reference: reference.then_some((&lap, status)),
+                    card,
                     active_id,
                     error,
                     hotkey_error: error,
                     connection: ConnectionState::Live,
                     browsing: error.is_some(),
                     file_hover: error.is_some(),
+                    max_height: f32::INFINITY,
                 };
                 let axis = if active_id.is_some() { Axis::Distance } else { Axis::Time };
                 let mut s = Settings { tab, labels: error.is_none(), axis, ..Default::default() };
@@ -800,10 +948,31 @@ mod tests {
         assert_eq!(s.tab, SettingsTab::Labels);
     }
 
+    #[test]
+    fn picking_a_shortcut_reports_it_even_when_unchanged() {
+        // Registering it may have failed before; picking it again must retry.
+        let lib = Library::default();
+        let cx = bare(&lib);
+        let mut s = Settings::default();
+        let h = Harness::new();
+        h.settle(&mut s, &cx);
+        h.focus(&mut s, &cx, "Ctrl+Alt+Shift+O");
+        assert!(h.frame(&mut s, &cx, enter()).actions.is_empty(), "Enter starts listening");
+        let ctrl_alt_shift = Modifiers::CTRL | Modifiers::ALT | Modifiers::SHIFT;
+        let out = h.frame(&mut s, &cx, vec![Event::ModifiersChanged(ctrl_alt_shift), key(Key::O, ctrl_alt_shift)]);
+        assert_eq!(out.actions, vec![PanelAction::SetHotkey("Ctrl+Alt+Shift+O".into())]);
+        assert_eq!(s.unlock_hotkey, Settings::default().unlock_hotkey, "the app applies it");
+    }
+
     /// Vertical centre of saved-lap row `i` on the Reference tab when no lap is drawn:
     /// head, tabs, padding, section heading, then rows.
     fn lap_row_center(i: usize) -> f32 {
         41.0 + 37.0 + GAP + 11.0 + (GAP - 6.0) + i as f32 * (LAP_ROW_HEIGHT + ROW_GAP) + LAP_ROW_HEIGHT / 2.0
+    }
+
+    /// Row `i`'s × (and "Remove?" once asked).
+    fn lap_row_remove(i: usize) -> Pos2 {
+        pos2(WIDTH - PAD_X - 6.0 - 11.0, lap_row_center(i))
     }
 
     #[test]
@@ -812,15 +981,14 @@ mod tests {
         let cx = bare(&lib);
         let mut s = Settings { tab: SettingsTab::Reference, ..Default::default() };
         let h = Harness::new();
-        h.frame(&mut s, &cx, Vec::new());
-        h.frame(&mut s, &cx, Vec::new());
+        h.settle(&mut s, &cx);
 
         // Unknown session: library order. Clicking the row selects it.
         let out = h.frame(&mut s, &cx, click(pos2(60.0, lap_row_center(1))));
         assert_eq!(out.actions, vec![PanelAction::SelectLap("b".into())]);
 
         // × asks first; "Remove?" (in the same spot) removes.
-        let x = pos2(WIDTH - PAD_X - 6.0 - 11.0, lap_row_center(1));
+        let x = lap_row_remove(1);
         assert!(h.frame(&mut s, &cx, click(x)).actions.is_empty());
         h.frame(&mut s, &cx, Vec::new());
         assert_eq!(h.frame(&mut s, &cx, click(x)).actions, vec![PanelAction::RemoveLap("b".into())]);
@@ -830,6 +998,112 @@ mod tests {
         assert!(h.frame(&mut s, &cx, escape()).actions.is_empty());
         h.frame(&mut s, &cx, Vec::new());
         assert!(h.frame(&mut s, &cx, click(x)).actions.is_empty(), "× asks again");
+    }
+
+    #[test]
+    fn selecting_another_lap_cancels_a_pending_remove() {
+        let lib = library();
+        let cx = bare(&lib);
+        let mut s = Settings { tab: SettingsTab::Reference, ..Default::default() };
+        let h = Harness::new();
+        h.settle(&mut s, &cx);
+        let x = lap_row_remove(1);
+        assert!(h.frame(&mut s, &cx, click(x)).actions.is_empty(), "B: Remove?");
+        h.frame(&mut s, &cx, Vec::new());
+        let out = h.frame(&mut s, &cx, click(pos2(60.0, lap_row_center(0))));
+        assert_eq!(out.actions, vec![PanelAction::SelectLap("a".into())]);
+        h.frame(&mut s, &cx, Vec::new());
+        assert!(h.frame(&mut s, &cx, click(x)).actions.is_empty(), "× asks again");
+    }
+
+    #[test]
+    fn reset_forgets_a_pending_remove_and_a_shortcut_being_picked() {
+        let lib = library();
+        let cx = bare(&lib);
+        let mut s = Settings { tab: SettingsTab::Reference, ..Default::default() };
+        let h = Harness::new();
+        h.settle(&mut s, &cx);
+        let x = lap_row_remove(1);
+        h.frame(&mut s, &cx, click(x));
+        reset(&h.ctx);
+        h.frame(&mut s, &cx, Vec::new());
+        assert!(h.frame(&mut s, &cx, click(x)).actions.is_empty(), "× asks again");
+
+        s.tab = SettingsTab::Display;
+        h.settle(&mut s, &cx);
+        h.focus(&mut s, &cx, "Ctrl+Alt+Shift+O");
+        h.frame(&mut s, &cx, enter());
+        reset(&h.ctx);
+        let out = h.frame(&mut s, &cx, vec![key(Key::K, Modifiers::CTRL | Modifiers::ALT)]);
+        assert!(out.actions.is_empty(), "no longer listening: {:?}", out.actions);
+    }
+
+    #[test]
+    fn the_card_names_the_chosen_lap_and_only_a_choice_can_be_removed() {
+        let lap = demo::sample_lap();
+        let session = demo::demo_session(&lap);
+        let lib = library();
+        let mut s = Settings { tab: SettingsTab::Reference, ..Default::default() };
+
+        // Spa lap chosen, demo running: its card, Remove clears the choice, its row is marked.
+        let waiting = PanelContext { card: Some(RefCard::Waiting(&lap)), active_id: Some("c"), ..bare(&lib) };
+        let waiting = PanelContext { session: Some(&session), connection: ConnectionState::Demo, ..waiting };
+        let h = Harness::new();
+        h.settle(&mut s, &waiting);
+        assert!(h.focusable(&mut s, &waiting).contains(&"Remove".to_owned()));
+        assert_eq!(h.focus(&mut s, &waiting, "Cy"), Some(true), "the chosen row is marked");
+        h.focus(&mut s, &waiting, "Remove");
+        assert_eq!(h.frame(&mut s, &waiting, enter()).actions, vec![PanelAction::ClearReference]);
+
+        // Nothing chosen: the bundled lap has nothing to remove, and no row is marked.
+        let bundled = PanelContext { card: Some(RefCard::Bundled(&lap, MatchStatus::Match)), ..waiting };
+        let bundled = PanelContext { active_id: None, ..bundled };
+        let h = Harness::new();
+        h.settle(&mut s, &bundled);
+        let names = h.focusable(&mut s, &bundled);
+        assert!(names.contains(&"Replace…".to_owned()) && !names.contains(&"Remove".to_owned()), "{names:?}");
+        assert_eq!(h.focus(&mut s, &bundled, "Cy"), Some(false));
+    }
+
+    #[test]
+    fn waiting_note_says_when_the_lap_is_drawn() {
+        let lap = demo::sample_lap();
+        let session = demo::demo_session(&lap);
+        assert_eq!(
+            waiting_note(&lap, Some(&session)),
+            "Drawn when you drive Silverstone Circuit (Grand Prix). \
+             The demo runs Silverstone Circuit with the bundled lap."
+        );
+    }
+
+    #[test]
+    fn a_tab_taller_than_the_window_scrolls() {
+        let lap = demo::sample_lap();
+        let mut lib = library();
+        for i in 0..4 {
+            let id = format!("x{i}");
+            lib.laps.push(entry(&id, "Dee", "BMW M4 GT3", "Silverstone Circuit (Grand Prix)", 5786.4, (52.0, -1.0)));
+        }
+        let error = "That isn't a CSV. In Garage 61, open the lap and export it as CSV.";
+        let cx = PanelContext {
+            card: Some(RefCard::Saved(&lap, MatchStatus::Unknown)),
+            active_id: Some("a"),
+            error: Some(error),
+            ..bare(&lib)
+        };
+        let mut s = Settings { tab: SettingsTab::Reference, ..Default::default() };
+        let natural = Harness::run(&mut s, &cx, Vec::new()).desired_height;
+        assert!(natural > 600.0, "{natural}");
+
+        let capped = PanelContext { max_height: 600.0, ..cx };
+        let h = Harness::tall(600.0);
+        h.settle(&mut s, &capped);
+        // It still asks for its full height (the window may grow back), and the foot
+        // stays at the bottom of the window, where it can be clicked.
+        let reset_link = pos2(PAD_X + 20.0, 600.0 - FOOT_HEIGHT + 10.0 + LINE_SMALL / 2.0);
+        let out = h.frame(&mut s, &capped, click(reset_link));
+        assert_eq!(out.desired_height, natural);
+        assert_eq!(out.actions, vec![PanelAction::ResetAll]);
     }
 
     #[test]

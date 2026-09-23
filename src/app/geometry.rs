@@ -1,10 +1,19 @@
-//! Window geometry in points: the overlay window around its panel, where it starts,
-//! and where the settings window goes.
+//! Window geometry: the overlay window around its panel, where it starts and whether
+//! a saved spot is still on screen, and where the settings window goes. Sizes are in
+//! points; positions across monitors in physical pixels, since a point is a different
+//! size on each monitor.
 
 use eframe::egui::{Pos2, Rect, Vec2, pos2, vec2};
 
 use crate::settings::WindowRect;
 use crate::ui::overlay::{MARGIN, MIN_PANEL};
+
+/// A monitor in physical pixels, and its pixels per point.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Monitor {
+    pub rect: Rect,
+    pub scale: f32,
+}
 
 /// Panel size on first launch and after a layout reset.
 pub const DEFAULT_PANEL: Vec2 = vec2(680.0, 170.0);
@@ -33,23 +42,24 @@ pub fn default_window(monitor: Rect) -> Rect {
     Rect::from_min_size(pos2(x, y), vec2(w, h)).expand(MARGIN)
 }
 
-pub fn to_window_rect(r: Rect) -> WindowRect {
-    WindowRect { x: r.min.x, y: r.min.y, w: r.width(), h: r.height() }
-}
-
-pub fn from_window_rect(w: WindowRect) -> Rect {
-    Rect::from_min_size(pos2(w.x, w.y), vec2(w.w, w.h))
-}
-
-/// Differ by more than rounding noise.
+/// Differ by more than rounding noise (or in units).
 pub fn moved(a: WindowRect, b: WindowRect) -> bool {
-    [a.x - b.x, a.y - b.y, a.w - b.w, a.h - b.h].iter().any(|d| d.abs() > 0.5)
+    a.px != b.px || [a.x - b.x, a.y - b.y, a.w - b.w, a.h - b.h].iter().any(|d| d.abs() > 0.5)
 }
 
-/// Enough of the window's header is on one of the monitors to grab it.
-pub fn reachable(window: Rect, monitors: &[Rect]) -> bool {
-    let header = Rect::from_min_size(window.min, vec2(window.width(), 26.0 + MARGIN));
-    monitors.iter().any(|m| m.intersect(header).area() >= 40.0 * 16.0)
+/// Where a saved window goes, physical pixels. Settings from before positions were
+/// saved in pixels hold points, which were placed at the primary monitor's scale.
+pub fn physical_position(w: WindowRect, primary_scale: f32) -> Pos2 {
+    if w.px { pos2(w.x, w.y) } else { pos2(w.x, w.y) * primary_scale }
+}
+
+/// Enough of the header of a window at `pos` (physical pixels), `width` points wide,
+/// is on one of the monitors to grab it.
+pub fn reachable(pos: Pos2, width: f32, monitors: &[Monitor]) -> bool {
+    monitors.iter().any(|m| {
+        let header = Rect::from_min_size(pos, vec2(width, 26.0 + MARGIN) * m.scale);
+        m.rect.intersect(header).area() >= 40.0 * 16.0 * m.scale * m.scale
+    })
 }
 
 /// Where the settings window goes, outside the overlay `panel` so changes stay
@@ -92,19 +102,36 @@ mod tests {
         assert_eq!(second.center().x, -960.0);
     }
 
+    const SAVED: WindowRect = WindowRect { x: 2100.0, y: 300.0, w: 696.0, h: 186.0, px: true };
+
     #[test]
-    fn window_rects_round_trip() {
-        let r = Rect::from_min_size(pos2(10.5, 20.0), vec2(696.0, 186.0));
-        assert_eq!(from_window_rect(to_window_rect(r)), r);
-        assert!(!moved(to_window_rect(r), to_window_rect(r.translate(vec2(0.3, 0.0)))));
-        assert!(moved(to_window_rect(r), to_window_rect(r.translate(vec2(2.0, 0.0)))));
+    fn saved_windows_move_only_beyond_rounding() {
+        assert!(!moved(SAVED, WindowRect { x: 2100.3, ..SAVED }));
+        assert!(moved(SAVED, WindowRect { x: 2102.0, ..SAVED }));
+        assert!(moved(SAVED, WindowRect { px: false, ..SAVED }), "re-saved in pixels");
     }
 
     #[test]
+    fn old_point_positions_land_where_they_used_to() {
+        assert_eq!(physical_position(SAVED, 1.5), pos2(2100.0, 300.0));
+        assert_eq!(physical_position(WindowRect { px: false, ..SAVED }, 1.5), pos2(3150.0, 450.0));
+    }
+
+    /// 1920×1080 at 100%, with 3840×2160 at 150% to its right.
+    const PRIMARY: Monitor = Monitor { rect: MONITOR, scale: 1.0 };
+    const SECONDARY: Monitor = Monitor { rect: Rect { min: pos2(1920.0, 0.0), max: pos2(5760.0, 2160.0) }, scale: 1.5 };
+
+    #[test]
     fn off_screen_windows_are_unreachable() {
-        assert!(reachable(default_window(MONITOR), &[MONITOR]));
-        assert!(!reachable(default_window(MONITOR).translate(vec2(3000.0, 0.0)), &[MONITOR]));
-        assert!(!reachable(default_window(MONITOR), &[]));
+        let monitors = [PRIMARY, SECONDARY];
+        let w = SAVED.w;
+        assert!(reachable(default_window(MONITOR).min, w, &[PRIMARY]));
+        assert!(reachable(pos2(2100.0, 300.0), w, &monitors), "on the scaled monitor");
+        assert!(reachable(pos2(1500.0, 300.0), w, &monitors), "across both");
+        assert!(!reachable(pos2(2100.0, 300.0), w, &[PRIMARY]), "that monitor's gone");
+        assert!(!reachable(pos2(3000.0, 1500.0), w, &[PRIMARY]), "below the primary");
+        assert!(!reachable(pos2(2100.0, 2170.0), w, &monitors), "under the bottom edge");
+        assert!(!reachable(default_window(MONITOR).min, w, &[]));
     }
 
     #[test]
