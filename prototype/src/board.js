@@ -107,12 +107,13 @@
 
   // ---------- grade scale ----------
   const tol = 0.08, perfect = 0.03;
+  // Tightest first: Perfect sits inside Good, so an early-to-late order would mislead.
   $("#scale").innerHTML = [
-    ["veryEarly", `over ${(3 * tol).toFixed(2)} s early`, "Braking well before the reference. Time left on the table."],
-    ["early", `${tol.toFixed(2)}–${(3 * tol).toFixed(2)} s early`, "Room to brake later."],
-    ["good", `within ±${tol.toFixed(2)} s`, "Close to the reference brake point."],
     ["perfect", `within ±${perfect.toFixed(2)} s`, "On the reference brake point."],
+    ["good", `within ±${tol.toFixed(2)} s`, "Close to the reference brake point."],
+    ["early", `${tol.toFixed(2)}–${(3 * tol).toFixed(2)} s early`, "Room to brake later."],
     ["late", `${tol.toFixed(2)}–${(3 * tol).toFixed(2)} s late`, "Later than the reference; check you still make the apex."],
+    ["veryEarly", `over ${(3 * tol).toFixed(2)} s early`, "Braking well before the reference. Time left on the table."],
     ["veryLate", `over ${(3 * tol).toFixed(2)} s late`, "Likely overshooting."],
     ["none", "no brake-on", "Lifted or stayed flat where the reference brakes."],
   ].map(([g, range, text]) => {

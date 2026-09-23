@@ -157,12 +157,13 @@
   // Grade key in Settings → Brakes, with the thresholds for the current window.
   function renderGradeKey() {
     const t = settings.v.cueTol, p = Math.min(settings.v.cuePerfect, t), f = (x) => x.toFixed(2);
+    // Tightest first: Perfect sits inside Good, so an early-to-late order would mislead.
     const rows = [
-      ["veryEarly", `over ${f(3 * t)} s early`],
-      ["early", `${f(t)}–${f(3 * t)} s early`],
-      ["good", `within ±${f(t)} s`],
       ["perfect", `within ±${f(p)} s`],
+      ["good", `within ±${f(t)} s`],
+      ["early", `${f(t)}–${f(3 * t)} s early`],
       ["late", `${f(t)}–${f(3 * t)} s late`],
+      ["veryEarly", `over ${f(3 * t)} s early`],
       ["veryLate", `over ${f(3 * t)} s late`],
       ["none", "no brake where the reference brakes"],
     ];
