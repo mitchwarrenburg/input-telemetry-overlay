@@ -145,7 +145,8 @@ fn read_lap_file(path: &Path) -> Result<Vec<u8>, ImportError> {
     Ok(bytes)
 }
 
-fn unix_now() -> u64 {
+/// Seconds since the Unix epoch (the library's timestamps).
+pub fn unix_now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
@@ -340,9 +341,14 @@ impl Library {
 
     /// The saved lap that best fits a session: same track and car, most recently used.
     pub fn best_for(&self, session: &SessionInfo) -> Option<&LibraryEntry> {
+        self.best_for_excluding(session, None)
+    }
+
+    /// [`Library::best_for`], passing over one lap (e.g. one whose file won't load).
+    pub fn best_for_excluding(&self, session: &SessionInfo, skip: Option<&str>) -> Option<&LibraryEntry> {
         self.laps
             .iter()
-            .filter(|e| e.status(Some(session)) == MatchStatus::Match)
+            .filter(|e| Some(e.id.as_str()) != skip && e.status(Some(session)) == MatchStatus::Match)
             .max_by_key(|e| (e.last_used, e.added))
     }
 

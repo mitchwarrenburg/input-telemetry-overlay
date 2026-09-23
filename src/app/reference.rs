@@ -116,14 +116,8 @@ pub fn auto_pick(library: &mut Library, session: &SessionInfo, broken: Option<&s
     if library.active_entry().is_some_and(|e| usable(&e.id) && e.status(Some(session)) == MatchStatus::Match) {
         return false;
     }
-    // `Library::best_for`, without the broken lap (it may well be the most recent).
-    let best = library
-        .laps
-        .iter()
-        .filter(|e| usable(&e.id) && e.status(Some(session)) == MatchStatus::Match)
-        .max_by_key(|e| (e.last_used, e.added))
-        .map(|e| e.id.clone());
-    let Some(best) = best else {
+    // The broken lap may well be the most recent match.
+    let Some(best) = library.best_for_excluding(session, broken).map(|e| e.id.clone()) else {
         return false;
     };
     library.set_active(Some(&best), now);

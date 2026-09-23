@@ -9,7 +9,7 @@ mod reference;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Rect, Vec2, ViewportBuilder, ViewportCommand, ViewportId, pos2, vec2};
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
@@ -18,7 +18,7 @@ use winit::window::Window;
 
 use crate::demo;
 use crate::lap::Lap;
-use crate::library::Library;
+use crate::library::{Library, unix_now};
 use crate::platform::{self, Desktop, DesktopEvent};
 use crate::settings::{self, Settings, SettingsTab, WindowRect};
 use crate::telemetry::iracing::IracingReader;
@@ -165,8 +165,9 @@ impl OverlayApp {
         let hotkey_error = desktop.set_hotkey(&settings.unlock_hotkey).err();
         let reader = (!opts.demo).then(|| spawn_reader(ctx, settings.update_hz));
         let paths = Paths::new(&opts.data_dir());
+        let (library, library_warning) = Library::load_with_warning(&paths.library);
         let mut app = Self {
-            library: Library::load(&paths.library),
+            library,
             paths,
             force_demo: opts.demo,
             applied: settings.clone(),
@@ -181,7 +182,7 @@ impl OverlayApp {
             live: false,
             demo: None,
             desktop,
-            error: None,
+            error: library_warning,
             load_error: None,
             hotkey_error,
             settings_open: opts.open_settings.is_some() || opts.settings_screenshot.is_some(),
@@ -783,10 +784,6 @@ fn winit_direction(dir: egui::ResizeDirection) -> winit::window::ResizeDirection
         E::NorthWest => W::NorthWest,
         E::SouthWest => W::SouthWest,
     }
-}
-
-fn unix_now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 #[cfg(test)]
