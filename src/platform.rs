@@ -1,8 +1,11 @@
-//! Windows integration: tray icon, global hotkey, file dialog, window styles and
-//! screen capture.
+//! Windows integration: tray icon, global hotkey, file dialog, window styles, screen
+//! capture, and one overlay per data folder.
 
-use std::path::PathBuf;
+use std::io;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use eframe::egui::{self, Color32, ColorImage};
 use global_hotkey::hotkey::HotKey;
@@ -10,9 +13,9 @@ use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawWindowHandle};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use windows_sys::Win32::Foundation::HWND;
+use windows_sys::Win32::Foundation::{HANDLE, HWND};
 
-/// What the tray, the hotkey or the file dialog asked for.
+/// What the tray, the hotkey, the file dialog or another launch asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopEvent {
     OpenSettings,
@@ -24,6 +27,9 @@ pub enum DesktopEvent {
     Quit,
     /// The file dialog closed; `None` when cancelled.
     Picked(Option<PathBuf>),
+    /// Laps another launch of the program was given (a CSV dropped on the exe, "Open
+    /// with") while this one runs.
+    Import(Vec<PathBuf>),
 }
 
 /// Raw events from OS callbacks and worker threads.
@@ -32,6 +38,8 @@ enum Raw {
     TrayClick,
     Hotkey(u32),
     Picked(Option<PathBuf>),
+    /// One launch's hand-over: its CSVs, or none when it only asked for the settings.
+    HandOver(Vec<PathBuf>),
 }
 
 struct Tray {
@@ -42,8 +50,9 @@ struct Tray {
     quit: MenuId,
 }
 
-/// The tray icon and the lock/unlock hotkey. Their events wake egui and are read with
-/// [`Desktop::poll`] (from `App::logic`, which runs even while the window is hidden).
+/// The tray icon, the lock/unlock hotkey and hand-overs from other launches. Their
+/// events wake egui and are read with [`Desktop::poll`] (from `App::logic`, which runs
+/// even while the window is hidden).
 pub struct Desktop {
     ctx: egui::Context,
     tx: Sender<Raw>,
@@ -51,20 +60,29 @@ pub struct Desktop {
     tray: Option<Tray>,
     hotkeys: Option<GlobalHotKeyManager>,
     hotkey: Option<HotKey>,
+    /// [`Instance`]'s mutex, held while the overlay runs.
+    _instance: Option<OwnedHandle>,
 }
 
 impl Desktop {
-    /// Creates the tray icon (from RGBA pixels) and the hotkey manager. Call on the main
-    /// thread once the event loop runs, i.e. from `App::new`. Failures are logged; the
-    /// overlay works without either.
-    pub fn new(ctx: &egui::Context, icon: Option<(Vec<u8>, u32, u32)>, locked: bool) -> Self {
+    /// Creates the tray icon (from RGBA pixels) and the hotkey manager, and listens for
+    /// other launches handing over to `instance`. Call on the main thread once the event
+    /// loop runs, i.e. from `App::new`. Failures are logged; the overlay works without
+    /// any of them.
+    pub fn new(
+        ctx: &egui::Context,
+        icon: Option<(Vec<u8>, u32, u32)>,
+        locked: bool,
+        instance: Option<Instance>,
+    ) -> Self {
         let (tx, rx) = channel();
         forward_events(ctx, &tx);
+        let instance = instance.map(|instance| instance.listen(ctx, &tx));
         let tray = icon
             .and_then(|(rgba, w, h)| Icon::from_rgba(rgba, w, h).map_err(|e| log::warn!("Tray icon image: {e}")).ok())
             .and_then(|icon| build_tray(icon, locked).map_err(|e| log::warn!("No tray icon: {e}")).ok());
         let hotkeys = GlobalHotKeyManager::new().map_err(|e| log::warn!("No global hotkeys: {e}")).ok();
-        Self { ctx: ctx.clone(), tx, rx, tray, hotkeys, hotkey: None }
+        Self { ctx: ctx.clone(), tx, rx, tray, hotkeys, hotkey: None, _instance: instance }
     }
 
     /// Registers the lock/unlock shortcut (e.g. `Ctrl+Alt+Shift+O`), replacing the previous
@@ -133,6 +151,8 @@ impl Desktop {
             Raw::TrayClick => Some(DesktopEvent::OpenSettings),
             Raw::Hotkey(id) => (self.hotkey.map(|h| h.id()) == Some(id)).then_some(DesktopEvent::ToggleLock),
             Raw::Picked(path) => Some(DesktopEvent::Picked(path)),
+            Raw::HandOver(paths) if paths.is_empty() => Some(DesktopEvent::OpenSettings),
+            Raw::HandOver(paths) => Some(DesktopEvent::Import(paths)),
         }
     }
 
@@ -206,6 +226,154 @@ fn build_tray(icon: Icon, locked: bool) -> Result<Tray, Box<dyn std::error::Erro
     Ok(Tray { _icon: icon, settings: settings.id().clone(), lock, reset: reset.id().clone(), quit: quit.id().clone() })
 }
 
+// ---- One overlay per data folder ----
+
+/// Hand-overs wait in `<data dir>\inbox`, one file per launch, one path per line.
+const INBOX: &str = "inbox";
+
+/// This process as the overlay for a data folder: a named mutex held while it runs,
+/// and the event other launches of the program signal after leaving their CSVs in the
+/// data folder's inbox. (Two overlays on one folder would each save their own copy of
+/// the lap library over the other's.)
+pub struct Instance {
+    mutex: OwnedHandle,
+    wake: OwnedHandle,
+    inbox: PathBuf,
+}
+
+impl Instance {
+    /// Makes this process the overlay for `data_dir`. `Ok(None)`: one already runs
+    /// there; give it this launch's files with [`hand_over`].
+    pub fn claim(data_dir: &Path) -> io::Result<Option<Self>> {
+        use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+        use windows_sys::Win32::System::Threading::CreateMutexW;
+        std::fs::create_dir_all(data_dir)?;
+        let name = wide(&instance_name(data_dir));
+        // SAFETY: a NUL-terminated name and default security; the error is read before
+        // anything else can change it.
+        let (mutex, existed) = unsafe {
+            let mutex = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
+            (mutex, GetLastError() == ERROR_ALREADY_EXISTS)
+        };
+        let mutex = owned(mutex)?;
+        if existed {
+            return Ok(None);
+        }
+        Ok(Some(Self { mutex, wake: wake_event(data_dir)?, inbox: data_dir.join(INBOX) }))
+    }
+
+    /// Sends hand-overs to `tx` (waking egui) from a thread that lives as long as the
+    /// process: those already waiting, then each one signalled. Returns the mutex, to
+    /// hold while the overlay runs.
+    fn listen(self, ctx: &egui::Context, tx: &Sender<Raw>) -> OwnedHandle {
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
+        let Self { mutex, wake, inbox } = self;
+        let (ctx, tx) = (ctx.clone(), tx.clone());
+        let spawned = std::thread::Builder::new().name("hand-over".into()).spawn(move || {
+            loop {
+                for paths in take_hand_overs(&inbox) {
+                    log::info!("Another launch handed over {paths:?}");
+                    let _ = tx.send(Raw::HandOver(paths));
+                    ctx.request_repaint();
+                }
+                // SAFETY: waits on an event handle this thread owns.
+                if unsafe { WaitForSingleObject(wake.as_raw_handle(), INFINITE) } != WAIT_OBJECT_0 {
+                    log::warn!("Stopped listening for other launches: {}", io::Error::last_os_error());
+                    return;
+                }
+            }
+        });
+        if let Err(e) = spawned {
+            log::warn!("Can't take files from other launches: {e}");
+        }
+        mutex
+    }
+}
+
+/// Gives the overlay running for `data_dir` this launch's CSVs, or with none, asks it
+/// to show its settings.
+pub fn hand_over(data_dir: &Path, paths: &[PathBuf]) -> io::Result<()> {
+    use windows_sys::Win32::System::Threading::SetEvent;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
+    // Relative paths mean this launch's folder, which the running overlay doesn't share.
+    let paths: Vec<PathBuf> = paths.iter().map(std::path::absolute).collect::<io::Result<_>>()?;
+    write_hand_over(&data_dir.join(INBOX), &paths)?;
+    let wake = wake_event(data_dir)?;
+    // SAFETY: plain calls; the event handle is owned here.
+    unsafe {
+        // It opens its settings window to show the result: let that come to the front.
+        AllowSetForegroundWindow(ASFW_ANY);
+        if SetEvent(wake.as_raw_handle()) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// Writes one hand-over (UTF-8, a path per line) whole, then renames it into place.
+/// Named by the time, so they're taken in order.
+fn write_hand_over(inbox: &Path, paths: &[PathBuf]) -> io::Result<()> {
+    let text: String = paths.iter().map(|p| format!("{}\n", p.to_string_lossy())).collect();
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let file = inbox.join(format!("{nanos:020}-{}.txt", std::process::id()));
+    crate::settings::write_atomic(&file, text.as_bytes())
+}
+
+/// Takes (reads and deletes) the hand-overs waiting in `inbox`, oldest first.
+fn take_hand_overs(inbox: &Path) -> Vec<Vec<PathBuf>> {
+    let Ok(entries) = std::fs::read_dir(inbox) else { return Vec::new() };
+    let mut files: Vec<PathBuf> =
+        entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "txt")).collect();
+    files.sort();
+    files
+        .iter()
+        .filter_map(|file| {
+            let text = std::fs::read_to_string(file);
+            if let Err(e) = std::fs::remove_file(file) {
+                log::warn!("Couldn't remove {}: {e}", file.display());
+            }
+            let text = text.map_err(|e| log::warn!("Couldn't read {}: {e}", file.display())).ok()?;
+            Some(text.lines().filter(|line| !line.trim().is_empty()).map(PathBuf::from).collect())
+        })
+        .collect()
+}
+
+/// `Local\input-telemetry-overlay-<hash of the folder>`: however the folder is spelled
+/// (relative, another case), the same folder gets the same name.
+fn instance_name(data_dir: &Path) -> String {
+    let dir = std::fs::canonicalize(data_dir)
+        .or_else(|_| std::path::absolute(data_dir))
+        .unwrap_or_else(|_| data_dir.to_path_buf());
+    let key = dir.to_string_lossy().to_lowercase();
+    // FNV-1a, 64-bit.
+    let hash = key.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+    format!("Local\\input-telemetry-overlay-{hash:016x}")
+}
+
+/// The auto-reset event that wakes the overlay for `data_dir` (created by whichever
+/// side gets there first).
+fn wake_event(data_dir: &Path) -> io::Result<OwnedHandle> {
+    use windows_sys::Win32::System::Threading::CreateEventW;
+    let name = wide(&format!("{}-wake", instance_name(data_dir)));
+    // SAFETY: a NUL-terminated name and default security.
+    owned(unsafe { CreateEventW(std::ptr::null(), 0, 0, name.as_ptr()) })
+}
+
+/// Takes ownership of a handle a Win32 call returned (null: it failed).
+fn owned(handle: HANDLE) -> io::Result<OwnedHandle> {
+    if handle.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: a fresh handle nothing else owns or closes.
+    Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
+}
+
+/// NUL-terminated UTF-16.
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain([0]).collect()
+}
+
 /// The Win32 handle behind a window.
 fn hwnd(window: &impl HasWindowHandle) -> Option<HWND> {
     match window.window_handle().ok()?.as_raw() {
@@ -258,6 +426,32 @@ pub fn fix_transparency(window: &impl HasWindowHandle) {
     }
 }
 
+/// Makes `println!` reach whoever started the program, although a GUI-subsystem build
+/// has no console of its own: its output as redirected (to a file or a pipe), or else
+/// the console it was started from. False when there's neither.
+pub fn attach_parent_console() -> bool {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_OUTPUT_HANDLE};
+    // SAFETY: no pointers; both fail harmlessly.
+    unsafe {
+        let out = GetStdHandle(STD_OUTPUT_HANDLE);
+        // Attaching would replace a redirection with the console.
+        if !out.is_null() && out != INVALID_HANDLE_VALUE {
+            return true;
+        }
+        AttachConsole(ATTACH_PARENT_PROCESS) != 0
+    }
+}
+
+/// A modal message box with an OK button.
+pub fn message_box(title: &str, text: &str, error: bool) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MessageBoxW};
+    let (title, text) = (wide(title), wide(text));
+    let icon = if error { MB_ICONERROR } else { MB_ICONINFORMATION };
+    // SAFETY: both strings are NUL-terminated and outlive the call.
+    unsafe { MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), MB_OK | icon) };
+}
+
 /// Copies a screen rectangle (physical pixels) as the desktop composes it. Used for
 /// the settings window screenshot: eframe's glow backend doesn't take screenshots of
 /// immediate viewports.
@@ -304,4 +498,54 @@ pub fn capture_screen(x: i32, y: i32, w: i32, h: i32) -> Option<ColorImage> {
     }
     let pixels = bgra.as_chunks::<4>().0.iter().map(|&[b, g, r, _]| Color32::from_rgb(r, g, b)).collect();
     Some(ColorImage::new([w as usize, h as usize], pixels))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_folder_has_one_instance_name_however_it_is_spelled() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let name = instance_name(dir.path());
+        assert!(name.starts_with("Local\\input-telemetry-overlay-") && name.len() == 30 + 16, "{name}");
+        let upper = PathBuf::from(dir.path().to_string_lossy().to_uppercase());
+        assert_eq!(instance_name(&upper), name);
+        assert_eq!(instance_name(&dir.path().join("sub").join("..")), name);
+        assert_ne!(instance_name(&dir.path().join("sub")), name);
+    }
+
+    #[test]
+    fn hand_overs_are_taken_in_order_and_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let inbox = dir.path().join(INBOX);
+        assert!(take_hand_overs(&inbox).is_empty(), "no inbox yet");
+        let laps = [PathBuf::from(r"C:\laps\Spa – 2:17.4.csv"), PathBuf::from(r"D:\b.csv")];
+        write_hand_over(&inbox, &laps).unwrap();
+        write_hand_over(&inbox, &[]).unwrap();
+        assert_eq!(take_hand_overs(&inbox), vec![laps.to_vec(), Vec::new()]);
+        assert!(take_hand_overs(&inbox).is_empty());
+    }
+
+    #[test]
+    fn a_second_launch_finds_the_first_and_wakes_it() {
+        use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        let dir = tempfile::tempdir().unwrap();
+        let first = Instance::claim(dir.path()).unwrap().expect("nothing runs there yet");
+        assert!(Instance::claim(dir.path()).unwrap().is_none(), "second launch");
+        // SAFETY: polls an event handle owned by `first`.
+        let signalled = || unsafe { WaitForSingleObject(first.wake.as_raw_handle(), 0) };
+        assert_eq!(signalled(), WAIT_TIMEOUT);
+
+        hand_over(dir.path(), &[PathBuf::from("lap.csv")]).unwrap();
+        assert_eq!(signalled(), WAIT_OBJECT_0);
+        assert_eq!(signalled(), WAIT_TIMEOUT, "auto-reset");
+        let expected = std::env::current_dir().unwrap().join("lap.csv");
+        assert_eq!(take_hand_overs(&first.inbox), vec![vec![expected]], "made absolute");
+
+        drop(first);
+        assert!(Instance::claim(dir.path()).unwrap().is_some(), "free again once it quits");
+    }
 }

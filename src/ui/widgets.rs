@@ -13,8 +13,9 @@ use eframe::egui::epaint::tessellator::path::rounded_rectangle;
 use eframe::egui::epaint::{CornerRadiusF32, Shadow};
 use eframe::egui::text::{LayoutJob, TextWrapping};
 use eframe::egui::{
-    Align2, Color32, CornerRadius, CursorIcon, EventFilter, FontId, Galley, Id, Key, Painter, Pos2, Rangef, Rect,
-    Response, Sense, Shape, Stroke, StrokeKind, TextFormat, Ui, Vec2, Widget, WidgetInfo, WidgetType, lerp, pos2, vec2,
+    Align2, Color32, Context, CornerRadius, CursorIcon, Event, EventFilter, FontId, Galley, Id, InputState, Key,
+    Modifiers, Painter, PointerButton, Pos2, Rangef, Rect, Response, Sense, Shape, Stroke, StrokeKind, TextFormat, Ui,
+    Vec2, Widget, WidgetInfo, WidgetType, lerp, pos2, vec2,
 };
 
 use super::theme::{self, Weight};
@@ -839,33 +840,41 @@ fn dashed_rect(painter: &Painter, rect: Rect, radius: f32, stroke: Stroke) {
 
 // ---- Shortcut picker ----
 
-/// A global-shortcut picker: shows the current combination; click it, then press the
-/// new one (Esc cancels). Returns the new shortcut, in `global-hotkey` syntax
+/// Marks a shortcut field that's waiting for a key, in egui's temp data under its id.
+#[derive(Clone, Copy)]
+struct Capturing;
+
+/// A global-shortcut picker: shows the current combination; click it (or Enter), then
+/// press the new one (Esc cancels). Returns the new shortcut, in `global-hotkey` syntax
 /// (`Ctrl+Alt+Shift+O`), in the frame it's chosen.
 pub fn shortcut_field(ui: &mut Ui, current: &str) -> Option<String> {
     let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
     let id = response.id;
-    let mut capturing = ui.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
-    if response.clicked() {
-        capturing = !capturing;
-    } else if response.clicked_elsewhere() {
-        capturing = false;
-    }
+    let was_capturing = ui.data(|d| d.get_temp::<Capturing>(id).is_some());
+    let mut capturing = was_capturing;
     let mut chosen = None;
-    if capturing {
-        if ui.input_mut(|i| i.consume_key(eframe::egui::Modifiers::NONE, Key::Escape)) {
+    // Keys before clicks: Space or Enter on the focused field also counts as a click.
+    if was_capturing {
+        if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
             capturing = false;
-        } else if let Some(spec) = ui.input(|i| {
-            i.events.iter().find_map(|e| match e {
-                eframe::egui::Event::Key { key, pressed: true, modifiers, .. } => shortcut_spec(*key, *modifiers),
-                _ => None,
-            })
-        }) {
+        } else if let Some(spec) = ui.input(pressed_shortcut) {
             chosen = Some(spec);
             capturing = false;
         }
     }
-    ui.data_mut(|d| d.insert_temp(id, capturing));
+    if !was_capturing && response.clicked() {
+        capturing = true;
+    } else if was_capturing && (response.clicked_by(PointerButton::Primary) || response.clicked_elsewhere()) {
+        // Only the pointer cancels: a keyboard "click" now is a key being picked.
+        capturing = false;
+    }
+    ui.data_mut(|d| {
+        if capturing {
+            d.insert_temp(id, Capturing);
+        } else {
+            d.remove::<Capturing>(id);
+        }
+    });
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), current));
 
     let painter = ui.painter();
@@ -887,17 +896,39 @@ pub fn shortcut_field(ui: &mut Ui, current: &str) -> Option<String> {
     if response.has_focus() {
         focus_ring(painter, rect, 7.0, 1.0);
     }
-    if capturing {
-        ui.ctx().request_repaint();
-    }
     chosen
+}
+
+/// Stops every shortcut field from waiting for a key (e.g. when its window closes).
+pub fn cancel_shortcut_capture(ctx: &Context) {
+    ctx.data_mut(|d| d.remove_by_type::<Capturing>());
+}
+
+/// The first key press this frame that makes a shortcut.
+fn pressed_shortcut(i: &InputState) -> Option<String> {
+    i.events.iter().find_map(|e| match e {
+        // Shift changes the logical key (Ctrl+Shift+1 arrives as "!"): then the key's
+        // place on the keyboard names it, as global-hotkey does.
+        Event::Key { key, physical_key, pressed: true, modifiers, .. } => {
+            shortcut_spec(*key, *modifiers).or_else(|| physical_key.and_then(|k| shortcut_spec(k, *modifiers)))
+        }
+        // egui-winit turns Ctrl+X/C/V (and Shift+Delete / Shift+Insert) into these,
+        // without a key event; Paste only comes when the clipboard holds text.
+        Event::Cut => shortcut_spec(if i.modifiers.ctrl { Key::X } else { Key::Delete }, i.modifiers),
+        Event::Copy => shortcut_spec(Key::C, i.modifiers),
+        Event::Paste(_) => shortcut_spec(if i.modifiers.ctrl { Key::V } else { Key::Insert }, i.modifiers),
+        _ => None,
+    })
 }
 
 /// A key press as a shortcut (`Ctrl+Shift+F10`), or `None` for keys a global shortcut
 /// can't use. Letters and other typing keys need Ctrl or Alt, so the shortcut never
-/// swallows ordinary typing.
-pub fn shortcut_spec(key: Key, m: eframe::egui::Modifiers) -> Option<String> {
+/// swallows ordinary typing; Alt+F4 stays Windows' "close window".
+pub fn shortcut_spec(key: Key, m: Modifiers) -> Option<String> {
     let name = shortcut_key_name(key)?;
+    if key == Key::F4 && m.alt && !m.ctrl && !m.shift {
+        return None;
+    }
     let function_key = matches!(
         key,
         Key::F1
@@ -989,7 +1020,6 @@ mod tests {
 
     #[test]
     fn shortcuts_need_ctrl_or_alt_except_function_keys() {
-        use eframe::egui::Modifiers;
         let ctrl_alt_shift = Modifiers { ctrl: true, alt: true, shift: true, ..Default::default() };
         assert_eq!(shortcut_spec(Key::O, ctrl_alt_shift).as_deref(), Some("Ctrl+Alt+Shift+O"));
         assert_eq!(shortcut_spec(Key::F10, Modifiers::SHIFT).as_deref(), Some("Shift+F10"));
@@ -998,5 +1028,142 @@ mod tests {
         assert_eq!(shortcut_spec(Key::O, Modifiers::SHIFT), None);
         assert_eq!(shortcut_spec(Key::Escape, Modifiers::CTRL), None);
         assert_eq!(shortcut_spec(Key::F20, Modifiers::CTRL), None);
+        assert_eq!(shortcut_spec(Key::F4, Modifiers::ALT), None, "closes windows");
+        assert_eq!(shortcut_spec(Key::F4, Modifiers::CTRL | Modifiers::ALT).as_deref(), Some("Ctrl+Alt+F4"));
+    }
+
+    const CTRL_ALT: Modifiers = Modifiers { alt: true, ctrl: true, shift: false, mac_cmd: false, command: true };
+    const CTRL_SHIFT: Modifiers = Modifiers { alt: false, ctrl: true, shift: true, mac_cmd: false, command: true };
+
+    /// A shortcut field alone in a headless egui, at the top left.
+    struct Picker(Context);
+
+    impl Picker {
+        const FIELD: Pos2 = pos2(100.0, 15.0);
+
+        fn new() -> Self {
+            let ctx = Context::default();
+            theme::install_fonts(&ctx);
+            let picker = Self(ctx);
+            picker.frame(Vec::new());
+            picker
+        }
+
+        /// One frame with `events` (and the modifiers of the last key event held).
+        fn frame(&self, events: Vec<Event>) -> Frame {
+            let modifiers = events
+                .iter()
+                .rev()
+                .find_map(|e| match e {
+                    Event::Key { modifiers, .. } => Some(*modifiers),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            self.frame_with(events, modifiers)
+        }
+
+        fn frame_with(&self, mut events: Vec<Event>, modifiers: Modifiers) -> Frame {
+            if !events.is_empty() {
+                events.insert(0, Event::ModifiersChanged(modifiers));
+            }
+            let screen = Rect::from_min_size(Pos2::ZERO, vec2(300.0, 100.0));
+            let input = eframe::egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+            let mut picked = None;
+            let mut out = self.0.run_ui(input, |ui| picked = shortcut_field(ui, "Ctrl+Alt+Shift+O"));
+            out.textures_delta.clear();
+            let repaint = out.viewport_output.values().any(|v| v.repaint_delay < std::time::Duration::MAX);
+            let capturing = self.0.data(|d| d.count::<Capturing>() > 0);
+            Frame { picked, capturing, repaint }
+        }
+
+        /// Clicks the field and checks it's waiting for a key.
+        fn start(&self) {
+            assert!(self.frame(click(Self::FIELD)).capturing);
+        }
+    }
+
+    #[derive(Debug)]
+    struct Frame {
+        picked: Option<String>,
+        capturing: bool,
+        repaint: bool,
+    }
+
+    fn click(pos: Pos2) -> Vec<Event> {
+        let button =
+            |pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        vec![Event::PointerMoved(pos), button(true), button(false)]
+    }
+
+    fn key(key: Key, physical_key: Option<Key>, modifiers: Modifiers) -> Event {
+        Event::Key { key, physical_key, pressed: true, repeat: false, modifiers }
+    }
+
+    #[test]
+    fn picker_records_a_combination_and_escape_cancels() {
+        let p = Picker::new();
+        p.start();
+        assert_eq!(p.frame(vec![key(Key::K, Some(Key::K), Modifiers::SHIFT)]).picked, None, "needs Ctrl or Alt");
+        let f = p.frame(vec![key(Key::K, Some(Key::K), CTRL_ALT)]);
+        assert_eq!((f.picked.as_deref(), f.capturing), (Some("Ctrl+Alt+K"), false));
+
+        p.start();
+        let f = p.frame(vec![key(Key::Escape, None, Modifiers::NONE)]);
+        assert_eq!((f.picked, f.capturing), (None, false));
+        assert!(p.frame(click(Picker::FIELD)).capturing, "a click starts again");
+        assert!(!p.frame(click(Picker::FIELD)).capturing, "and another click stops");
+    }
+
+    #[test]
+    fn picker_records_ctrl_c_x_and_v() {
+        // egui-winit sends these instead of key events.
+        for (event, modifiers, spec) in [
+            (Event::Copy, CTRL_ALT, "Ctrl+Alt+C"),
+            (Event::Cut, CTRL_ALT, "Ctrl+Alt+X"),
+            (Event::Paste("clipboard".into()), CTRL_SHIFT, "Ctrl+Shift+V"),
+            (Event::Cut, Modifiers::ALT | Modifiers::SHIFT, "Alt+Shift+Delete"),
+        ] {
+            let p = Picker::new();
+            p.start();
+            assert_eq!(p.frame_with(vec![event], modifiers).picked.as_deref(), Some(spec));
+        }
+    }
+
+    #[test]
+    fn picker_names_shifted_keys_by_their_place() {
+        let p = Picker::new();
+        p.start();
+        let f = p.frame(vec![key(Key::Exclamationmark, Some(Key::Num1), CTRL_SHIFT)]);
+        assert_eq!(f.picked.as_deref(), Some("Ctrl+Shift+1"));
+    }
+
+    #[test]
+    fn picker_started_from_the_keyboard_takes_space_combinations() {
+        let p = Picker::new();
+        p.frame(vec![key(Key::Tab, None, Modifiers::NONE)]);
+        assert!(p.frame(vec![key(Key::Enter, None, Modifiers::NONE)]).capturing, "Enter starts");
+        // Space and Enter "click" the focused field; that mustn't cancel or swallow the key.
+        assert!(p.frame(vec![key(Key::Space, None, Modifiers::NONE)]).capturing);
+        let f = p.frame(vec![key(Key::Space, Some(Key::Space), CTRL_ALT)]);
+        assert_eq!((f.picked.as_deref(), f.capturing), (Some("Ctrl+Alt+Space"), false));
+    }
+
+    #[test]
+    fn waiting_for_a_key_doesnt_keep_repainting() {
+        let p = Picker::new();
+        p.start();
+        // egui repaints once more after input; then nothing is scheduled.
+        let frames: Vec<Frame> = (0..3).map(|_| p.frame(Vec::new())).collect();
+        assert!(frames.iter().all(|f| f.capturing), "{frames:?}");
+        assert!(!frames[2].repaint, "{frames:?}");
+    }
+
+    #[test]
+    fn cancelling_capture_from_outside_stops_it() {
+        let p = Picker::new();
+        p.start();
+        cancel_shortcut_capture(&p.0);
+        let f = p.frame(vec![key(Key::K, Some(Key::K), CTRL_ALT)]);
+        assert_eq!((f.picked, f.capturing), (None, false));
     }
 }

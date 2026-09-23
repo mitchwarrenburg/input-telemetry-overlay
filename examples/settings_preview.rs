@@ -14,7 +14,7 @@ use ito::library::{Library, LibraryEntry};
 use ito::matching::{self, RefInfo};
 use ito::settings::{Axis, Settings, SettingsTab};
 use ito::telemetry::SessionInfo;
-use ito::ui::settings_panel::{self, ConnectionState, PanelContext};
+use ito::ui::settings_panel::{self, ConnectionState, PanelContext, RefCard};
 use ito::ui::theme;
 
 /// The prototype page's background, behind the panel's rounded corners.
@@ -47,6 +47,8 @@ struct Variant {
     click: bool,
     /// Tab key presses before the screenshot (keyboard focus).
     tabs: u32,
+    /// Tallest the window may be (a short monitor); the panel scrolls past it.
+    max_height: f32,
 }
 
 impl Variant {
@@ -62,6 +64,7 @@ impl Variant {
             pointer: None,
             click: false,
             tabs: 0,
+            max_height: f32::INFINITY,
         }
     }
 
@@ -101,6 +104,10 @@ fn variants() -> Vec<Variant> {
     empty.connection = ConnectionState::Waiting;
     let mut many = Variant::new("reference-many", SettingsTab::Reference);
     many.laps = Laps::Many;
+    let mut short = Variant::new("reference-short-monitor", SettingsTab::Reference);
+    short.laps = Laps::Many;
+    short.error = error.error;
+    short.max_height = 520.0;
     vec![
         Variant::new("display", SettingsTab::Display),
         // Over the Background slider's thumb.
@@ -116,6 +123,7 @@ fn variants() -> Vec<Variant> {
         bundled,
         empty,
         many,
+        short,
         // The second saved lap's ×. Last: its pending "Remove?" would carry over.
         Variant::new("reference-confirm-remove", SettingsTab::Reference).clicking(272.0, 322.0),
     ]
@@ -269,20 +277,26 @@ impl eframe::App for Preview {
             Laps::Many => (&self.many, Some("ferrari")),
         };
         let status = matching::status(&RefInfo::from_lap(&self.lap), Some(session));
+        let card = match v.laps {
+            Laps::None => None,
+            Laps::Bundled => Some(RefCard::Bundled(&self.lap, status)),
+            Laps::Saved | Laps::Many => Some(RefCard::Saved(&self.lap, status)),
+        };
         let cx = PanelContext {
             library,
             session: Some(session),
-            reference: (v.laps != Laps::None).then_some((&self.lap, status)),
+            card,
             active_id,
             error: v.error,
             hotkey_error: None,
             connection: v.connection,
             browsing: false,
             file_hover: v.file_hover,
+            max_height: v.max_height,
         };
         let out = settings_panel::show(ui, &mut v.settings, &cx);
 
-        let want = vec2(settings_panel::WIDTH, out.desired_height);
+        let want = vec2(settings_panel::WIDTH, out.desired_height.min(v.max_height));
         let have = ctx.content_rect().size();
         if (want - have).length() > 0.5 {
             ctx.send_viewport_cmd(ViewportCommand::InnerSize(want));
