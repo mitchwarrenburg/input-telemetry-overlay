@@ -88,7 +88,7 @@ pub enum ImportError {
     NotText,
     /// Over [`MAX_LAP_FILE_BYTES`].
     TooLarge,
-    /// A saved copy whose content no longer matches its id.
+    /// A saved copy that no longer parses and isn't what was imported.
     Damaged,
     Lap(LapError),
     Io(io::Error),
@@ -308,11 +308,11 @@ impl Library {
             .lap_path(laps_dir)
             .ok_or_else(|| ImportError::Io(io::Error::new(io::ErrorKind::InvalidData, "not a library lap file")))?;
         let bytes = read_lap_file(&path)?;
-        if content_id(&bytes) != entry.id {
-            return Err(ImportError::Damaged);
-        }
-        let text = std::str::from_utf8(&bytes).map_err(|_| ImportError::NotText)?;
-        parse_garage61_csv(text, &entry.original_name).map_err(ImportError::Lap)
+        let lap = std::str::from_utf8(&bytes)
+            .map_err(|_| ImportError::NotText)
+            .and_then(|text| parse_garage61_csv(text, &entry.original_name).map_err(ImportError::Lap));
+        // A copy that no longer parses and isn't what was imported: say how to repair it.
+        lap.map_err(|e| if content_id(&bytes) == entry.id { e } else { ImportError::Damaged })
     }
 
     /// Makes a saved lap the reference (or clears it with `None`).
@@ -511,6 +511,10 @@ mod tests {
         let laps = Library::laps_dir(dir.path());
         let mut lib = Library::default();
         let (entry, _) = lib.import_bytes(&laps, NAME, SAMPLE, 1).unwrap();
+        // Changed but still a lap (line endings rewritten by a sync tool): still loads.
+        let crlf = String::from_utf8(SAMPLE.to_vec()).unwrap().replace('\n', "\r\n");
+        std::fs::write(laps.join(&entry.file), crlf).unwrap();
+        assert_eq!(lib.load_lap(&laps, &entry.id).unwrap().n(), entry.samples);
         std::fs::write(laps.join(&entry.file), [0u8; 100]).unwrap();
         assert!(matches!(lib.load_lap(&laps, &entry.id), Err(ImportError::Damaged)));
         lib.import_bytes(&laps, NAME, SAMPLE, 2).unwrap();
