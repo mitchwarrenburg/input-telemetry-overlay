@@ -12,8 +12,13 @@
     grid: "rgba(255, 255, 255, 0.07)",
     baseline: "rgba(255, 255, 255, 0.16)",
     brakePill: "#e0301f", // a step darker than the line so white text clears 4.5:1
-    refText: "#ffb8b0", // reference peak numbers: brake red, lightened to read on the fills
+    peakLine: "rgba(232, 239, 238, 0.5)", // reference peak: dotted line and its label's border
   };
+  // Reference peak labels sit on a rail across the top of the plot, this far above it.
+  const RAIL_RISE = 9;
+  const RAIL_H = 13;
+  const PIN_H = 14; // your peak's pill
+  const PIN_TIP = 4; // its pointer
   const FONT = '"Barlow Semi Condensed", "Segoe UI", system-ui, sans-serif';
   const DIST_STEPS = [25, 50, 100, 200, 250, 500, 1000, 2000];
   const TIME_STEPS = [0.5, 1, 2, 5, 10];
@@ -70,8 +75,6 @@
       this.ctx = canvas.getContext("2d");
       this.w = this.h = 0;
       this.dpr = 1;
-      this.labelSpots = new Map(); // label key → last frame's spot, so labels don't hop
-      this.labelOffsets = new Map(); // label key → where it was drawn relative to its peak
     }
 
     resize(w, h) {
@@ -132,38 +135,29 @@
       ctx.rect(plot.x, plot.y - 4, plot.w, plot.h + 8);
       ctx.clip();
 
-      // What's drawn, column by column, for the peak labels to keep off.
-      const mask = new ITO.TraceMask(w, Y(0));
-      const onScreen = (vs, ys) => [vs.map(X), ys.map(Y)];
-
       // Reference lap: filled areas, throttle under brake.
       if (ref && sc.refOpacity > 0) {
         const pts = refPoints(ref, fr, -sc.behind - margin, sc.ahead + margin);
         this.fillArea(pts.v, pts.t, RGB.throttle, sc.refOpacity, X, Y, plot);
         this.fillArea(pts.v, pts.b, RGB.brake, sc.refOpacity, X, Y, plot);
-        for (const ys of [pts.t, pts.b]) {
-          const [xs, yy] = onScreen(pts.v, ys);
-          mask.addLine(xs, yy, 1);
-          mask.addFill(xs, yy);
-        }
       }
+
+      // Reference peaks: a dotted line through each, under your lines.
+      const labels = sc.labels;
+      const refPeaks = labels.show && ref && labels.mode !== "live" ? this.refPeaks(sc, ref, fr, X, Y, plot) : [];
+      this.drawPeakLines(refPeaks, Y, plot);
 
       // Live inputs: solid lines up to the car.
       const live = livePoints(sc.live, sc, -sc.behind - margin);
       this.strokeLine(live.v, live.t, RGB.throttle, X, Y);
       this.strokeLine(live.v, live.b, RGB.brake, X, Y);
       ctx.restore();
-      for (const ys of [live.t, live.b]) mask.addLine(...onScreen(live.v, ys), 2);
-      for (const v of sfLines) mask.addVLine(X(v), plot.y, plot.y + plot.h);
 
       // Brake points: a mark at each reference brake-on, your gap to it underlined.
-      const markers = [];
-      if (ref && sc.cue) {
-        for (const x of this.drawBrakePoints(sc, ref, fr, X, Y, plot)) {
-          mask.addVLine(x, plot.y + 3, plot.y + plot.h);
-          markers.push({ x: x - 4.5, y: plot.y - 2, w: 9, h: 7 });
-        }
-      }
+      if (ref && sc.cue) this.drawBrakePoints(sc, ref, fr, X, Y, plot);
+
+      // Reference peak labels on the rail; the cursor draws over them as they pass it.
+      const rail = this.drawRail(refPeaks);
 
       // Car position: cursor, playhead and current-value dots.
       ctx.strokeStyle = "rgba(255, 255, 255, 0.92)";
@@ -171,13 +165,10 @@
       ctx.beginPath(); ctx.moveTo(cx, plot.y - 2); ctx.lineTo(cx, plot.y + plot.h); ctx.stroke();
       ctx.fillStyle = "#fff";
       ctx.beginPath(); ctx.moveTo(cx - 4, plot.y - 7); ctx.lineTo(cx + 4, plot.y - 7); ctx.lineTo(cx, plot.y - 2); ctx.closePath(); ctx.fill();
-      // Labels keep off the cursor and its dots: that's where you're looking.
-      const dots = [{ x: cx - 4, y: plot.y - 8, w: 8, h: plot.h + 8 }];
-      for (const [val, rgb] of [[sc.now.throttle, RGB.throttle], [sc.now.brake, RGB.brake]]) {
-        const y = Y(val);
-        this.dot(cx, y, rgb);
-        dots.push({ x: cx - 6, y: y - 6, w: 12, h: 12 });
-      }
+      for (const [val, rgb] of [[sc.now.throttle, RGB.throttle], [sc.now.brake, RGB.brake]]) this.dot(cx, Y(val), rgb);
+
+      // Your peaks: pinned to the apex of your brake line, on top of everything else.
+      if (labels.show && labels.mode !== "ref") this.drawPins(sc, X, Y, plot, [...sc.obstacles, ...rail]);
 
       // Y labels.
       ctx.font = `600 10px ${FONT}`;
@@ -233,8 +224,6 @@
         }
       }
 
-      // Brake peak labels.
-      if (sc.labels.show) this.drawPeakLabels(sc, ref, fr, X, Y, plot, mask, [...sc.obstacles, ...placedX, ...dots, ...markers]);
 
       // Empty state.
       if (!sc.ref) {
@@ -265,15 +254,10 @@
           if (v >= lo && v <= hi) xs.push(Math.round(X(v)) + 0.5);
         }
       }
-      ctx.save();
-      ctx.setLineDash([2, 3]);
-      ctx.lineWidth = 1;
-      ctx.strokeStyle = `rgba(${RGB.brake}, 0.5)`;
-      for (const x of xs) { ctx.beginPath(); ctx.moveTo(x, plot.y + 3); ctx.lineTo(x, base); ctx.stroke(); }
-      ctx.restore();
+      // A small mark on the baseline at each (the top of the plot is the peak labels' rail).
       ctx.fillStyle = `rgb(${RGB.brake})`;
       for (const x of xs) {
-        ctx.beginPath(); ctx.moveTo(x - 3.5, plot.y - 1); ctx.lineTo(x + 3.5, plot.y - 1); ctx.lineTo(x, plot.y + 3.5); ctx.closePath(); ctx.fill();
+        ctx.beginPath(); ctx.moveTo(x - 3.5, base - 0.5); ctx.lineTo(x + 3.5, base - 0.5); ctx.lineTo(x, base - 6.5); ctx.closePath(); ctx.fill();
       }
 
       // Under the baseline, from the reference brake-on to yours, in the grade's colour.
@@ -290,7 +274,6 @@
         ctx.lineWidth = 1.5;
         ctx.beginPath(); ctx.moveTo(x1, y - 4); ctx.lineTo(x1, y + 2); ctx.stroke();
       }
-      return xs;
     }
 
     fillArea(v, val, rgb, op, X, Y, plot) {
@@ -345,149 +328,117 @@
       else { ctx.fillStyle = `rgb(${rgb})`; ctx.fill(); }
     }
 
-    // Brake peak labels: one tag per braking zone where both your peak and the reference's
-    // are shown, placed clear of the traces (see peak-labels.js), else left out.
-    drawPeakLabels(sc, ref, fr, X, Y, plot, mask, obstacles) {
+    // Reference peaks in view, with their label box on the rail. Labels keep their spot:
+    // one that would overlap a label nearer the car (the next zone ahead first) nudges
+    // aside a few px, and if that isn't enough it's left off; its line still shows.
+    refPeaks(sc, ref, fr, X, Y, plot) {
       const { ctx } = this;
-      const { mode, min } = sc.labels;
-      const isDist = sc.axis === "distance";
-      const lo = -sc.behind, hi = sc.ahead;
-      const cx = X(0);
-
-      // Peaks in view.
-      const lives = [];
-      if (mode !== "ref") {
-        for (const e of sc.live.events) {
-          const v = isDist ? e.peakD - sc.now.D : e.peakT - sc.now.t;
-          if (e.peak >= min && v >= lo && v <= 0) {
-            lives.push({ key: `L${Math.round((e.onT ?? e.peakT) * 60)}`, v, peak: e.peak, active: e.active });
-          }
+      const lo = -sc.behind, hi = sc.ahead, cx = X(0);
+      const out = [];
+      ref.zones.forEach((z) => {
+        if (z.peak < sc.labels.min) return;
+        for (let m = Math.floor((fr.center + lo) / fr.period); m <= Math.floor((fr.center + hi) / fr.period); m++) {
+          const v = m * fr.period + fr.at(z.peakIdx) - fr.center;
+          if (v >= lo && v <= hi) out.push({ x: X(v), y: Y(z.peak), peak: z.peak });
         }
-      }
-      const refs = [];
-      if (ref && mode !== "live") {
-        ref.zones.forEach((z, k) => {
-          if (z.peak < min) return;
-          for (let m = Math.floor((fr.center + lo) / fr.period); m <= Math.floor((fr.center + hi) / fr.period); m++) {
-            const base = m * fr.period - fr.center;
-            const v = base + fr.at(z.peakIdx);
-            if (v >= lo && v <= hi) refs.push({ key: `R${m}:${k}`, v, peak: z.peak, from: base + fr.at(z.start), to: base + fr.at(z.end) });
-          }
-        });
-      }
-
-      // Pair each of your peaks with the reference zone it falls in.
-      const paired = new Set();
-      const tags = [];
-      for (const l of lives) {
-        const r = refs
-          .filter((r) => !paired.has(r) && l.v >= r.from - 0.3 * (r.to - r.from) && l.v <= r.to + 0.3 * (r.to - r.from))
-          .sort((a, b) => Math.abs(a.v - l.v) - Math.abs(b.v - l.v))[0];
-        if (r && Math.abs(X(r.v) - X(l.v)) <= 70) {
-          paired.add(r);
-          tags.push({ key: `P${l.key}`, live: l, ref: r });
-        } else tags.push({ key: l.key, live: l });
-      }
-      for (const r of refs) if (!paired.has(r)) tags.push({ key: r.key, ref: r });
-
-      // Priority: the zone you're braking in, the next one ahead, then nearest the car, with
-      // big peaks ahead of light dabs.
-      const next = refs.filter((r) => r.v > 0).sort((a, b) => a.v - b.v)[0];
-      const rank = (t) => (t.live && t.live.active ? 0 : t.ref === next && !t.live ? 1 : 2);
-      const peakOf = (t) => Math.max(t.live ? t.live.peak : 0, t.ref ? t.ref.peak : 0);
-      const at = (t) => Math.abs(X((t.live || t.ref).v) - cx) - 150 * peakOf(t);
-      tags.sort((a, b) => rank(a) - rank(b) || at(a) - at(b));
-
-      // Sizes.
-      const LIVE_FONT = `700 10.5px ${FONT}`, REF_FONT = `600 10.5px ${FONT}`;
-      const text = (p) => String(Math.round(p * 100));
-      const item = (t) => {
-        ctx.font = LIVE_FONT;
-        const lw = t.live ? Math.ceil(ctx.measureText(text(t.live.peak)).width) + 8 : 0;
-        ctx.font = REF_FONT;
-        const rw = t.ref ? Math.ceil(ctx.measureText(text(t.ref.peak)).width) + (t.live ? 4 : 2) : 0;
-        const pts = [t.live, t.ref].filter(Boolean).map((p) => ({ x: X(p.v), y: Y(p.peak) }));
-        // A reference label may graze a line by a column or two; yours, a quarter of its width.
-        const wTot = lw + (lw && rw ? 2 : 0) + rw;
-        return { key: t.key, tag: t, pts, w: wTot, h: t.live ? 14 : 12, lw, rw, limit: t.live ? Math.floor(wTot / 4) : 1 };
-      };
-      // A pair that doesn't fit may still fit as two separate labels.
-      const items = tags.map((t) => ({
-        ...item(t),
-        split: t.live && t.ref ? [item({ key: t.live.key, live: t.live }), item({ key: t.ref.key, ref: t.ref })] : null,
-      }));
-
-      const placed = ITO.placePeakLabels({
-        items,
-        mask,
-        taken: obstacles,
-        bounds: { x0: plot.x, x1: plot.x + plot.w, y0: 2, y1: plot.y + plot.h - 1 },
-        memo: this.labelSpots,
-        maxLeader: Math.max(22, plot.h * 0.45),
-        maxLabels: Math.max(1, Math.floor(plot.w / 80)),
       });
-
-      // When a label changes spot it glides there (about 0.1 s), relative to its peak so it
-      // still scrolls with the graph.
-      const offsets = new Map();
-      for (const p of placed) {
-        const a = p.item.pts[0], key = p.item.key;
-        const want = { x: p.rect.x - a.x, y: p.rect.y - a.y };
-        const was = this.labelOffsets.get(key);
-        const cur = was && Math.hypot(want.x - was.x, want.y - was.y) < 90
-          ? { x: was.x + (want.x - was.x) * 0.3, y: was.y + (want.y - was.y) * 0.3 }
-          : want;
-        if (Math.hypot(want.x - cur.x, want.y - cur.y) < 0.5) Object.assign(cur, want);
-        offsets.set(key, cur);
-        p.rect = { ...p.rect, x: a.x + cur.x, y: a.y + cur.y };
-      }
-      this.labelOffsets = offsets;
-
-      // Dots and leaders first, then the tags on top.
-      for (const { item, rect } of placed) {
-        const t = item.tag;
-        const parts = [];
-        if (t.live) parts.push({ p: t.live, x0: rect.x, x1: rect.x + item.lw, live: true });
-        if (t.ref) parts.push({ p: t.ref, x0: rect.x + rect.w - item.rw, x1: rect.x + rect.w, live: false });
-        for (const part of parts) {
-          const px = X(part.p.v), py = Y(part.p.peak);
-          const sub = { x: part.x0, y: rect.y, w: part.x1 - part.x0, h: rect.h };
-          const qx = clamp(px, sub.x, sub.x + sub.w), qy = clamp(py, sub.y, sub.y + sub.h);
-          const d = Math.hypot(qx - px, qy - py);
-          if (d > ITO.LABEL_GAP) {
-            const k = (d - (part.live ? 5 : 4)) / d; // stop at the dot's edge
-            ctx.strokeStyle = part.live ? `rgba(${RGB.brake}, 0.75)` : "rgba(255, 255, 255, 0.38)";
-            ctx.lineWidth = 1;
-            ctx.beginPath(); ctx.moveTo(qx, qy); ctx.lineTo(qx + (px - qx) * k, qy + (py - qy) * k); ctx.stroke();
-          }
-          this.dot(px, py, RGB.brake, !part.live);
+      ctx.font = `600 10px ${FONT}`;
+      const top = plot.y - RAIL_RISE;
+      const placed = [];
+      const near = (p) => (p.x >= cx ? (p.x - cx) * 0.5 : cx - p.x); // ahead counts double
+      for (const p of [...out].sort((a, b) => near(a) - near(b))) {
+        p.text = `${Math.round(p.peak * 100)}%`;
+        const w = Math.ceil(ctx.measureText(p.text).width) + 8;
+        for (const dx of [0, -4, 4, -8, 8]) {
+          const box = { x: clamp(p.x - w / 2 + dx, plot.x, plot.x + plot.w - w), y: top, w, h: RAIL_H };
+          if (placed.some((q) => overlaps(q, box, 3))) continue;
+          placed.push(box);
+          p.box = box;
+          break;
         }
       }
+      return out;
+    }
 
+    // Dotted line from the rail down through each reference peak to the 0% line.
+    drawPeakLines(peaks, Y, plot) {
+      if (!peaks.length) return;
+      const { ctx } = this;
+      ctx.save();
+      ctx.strokeStyle = INK.peakLine;
+      ctx.lineWidth = 1;
+      ctx.lineCap = "round";
+      ctx.setLineDash([0.01, 3]);
+      const top = plot.y - RAIL_RISE + RAIL_H;
+      for (const p of peaks) {
+        const x = Math.round(p.x) + 0.5;
+        ctx.beginPath(); ctx.moveTo(x, top + 1); ctx.lineTo(x, Y(0)); ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // The peak dots, then each label at the top of its line. Returns the label boxes.
+    drawRail(peaks) {
+      const { ctx } = this;
+      for (const p of peaks) this.dot(p.x, p.y, RGB.brake, true);
+      ctx.font = `600 10px ${FONT}`;
+      ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      for (const { item, rect } of placed) {
-        const t = item.tag;
-        const cy = rect.y + rect.h / 2 + 0.5;
-        if (t.live) {
-          ctx.fillStyle = INK.brakePill;
-          ctx.beginPath(); ctx.roundRect(rect.x, rect.y, item.lw, rect.h, 3); ctx.fill();
-          ctx.font = LIVE_FONT;
-          ctx.textAlign = "center";
-          ctx.fillStyle = "#fff";
-          ctx.fillText(text(t.live.peak), rect.x + item.lw / 2, cy);
-        }
-        if (t.ref) {
-          // No box: the number with a dark halo covers only its own strokes.
-          ctx.font = REF_FONT;
-          ctx.textAlign = "right";
-          const x = rect.x + rect.w - 1;
-          ctx.lineJoin = "round";
-          ctx.lineWidth = 3.5;
-          ctx.strokeStyle = `rgba(${INK.surface}, 0.9)`;
-          ctx.strokeText(text(t.ref.peak), x, cy);
-          ctx.fillStyle = INK.refText;
-          ctx.fillText(text(t.ref.peak), x, cy);
-        }
+      const boxes = [];
+      for (const p of peaks) {
+        const b = p.box;
+        if (!b) continue;
+        ctx.beginPath();
+        ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, 3);
+        ctx.fillStyle = `rgba(${INK.surface}, 0.92)`;
+        ctx.fill();
+        ctx.strokeStyle = INK.peakLine;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.fillStyle = INK.text;
+        ctx.fillText(p.text, b.x + b.w / 2, b.y + b.h / 2 + 0.5);
+        boxes.push(b);
+      }
+      return boxes;
+    }
+
+    // Your peaks: a solid pill whose pointer touches the apex of your brake line. It sits
+    // above the apex, or below when above would run into a reference label, the header or
+    // another pin. The one you're braking in is placed first.
+    drawPins(sc, X, Y, plot, taken) {
+      const { ctx } = this;
+      const isDist = sc.axis === "distance";
+      const pins = [];
+      for (const e of sc.live.events) {
+        const v = isDist ? e.peakD - sc.now.D : e.peakT - sc.now.t;
+        if (e.peak >= sc.labels.min && v >= -sc.behind && v <= 0) pins.push({ x: X(v), y: Y(e.peak), peak: e.peak, v });
+      }
+      pins.sort((a, b) => b.v - a.v); // nearest the car first
+      ctx.font = `700 10.5px ${FONT}`;
+      const placed = [...taken];
+      const drawn = [];
+      for (const p of pins) {
+        const text = `${Math.round(p.peak * 100)}%`;
+        const w = Math.ceil(ctx.measureText(text).width) + 8;
+        const x = clamp(p.x - w / 2, plot.x, plot.x + plot.w - w);
+        const above = { x, y: p.y - 2 - PIN_TIP - PIN_H, w, h: PIN_H, up: false };
+        const below = { x, y: p.y + 2 + PIN_TIP, w, h: PIN_H, up: true };
+        const clear = (b) => b.y >= 2 && b.y + b.h <= plot.y + plot.h && !placed.some((q) => overlaps(q, b, 1));
+        const box = clear(above) ? above : clear(below) ? below : above;
+        placed.push(box);
+        drawn.push({ box, text, ax: clamp(p.x, x + 4, x + w - 4), ay: p.y });
+      }
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      for (const { box, text, ax, ay } of drawn) {
+        ctx.fillStyle = INK.brakePill;
+        ctx.beginPath(); ctx.roundRect(box.x, box.y, box.w, box.h, 3); ctx.fill();
+        // The pointer's tip sits on the top (or bottom) edge of the line at the apex.
+        const edge = box.up ? box.y : box.y + box.h;
+        const tip = box.up ? ay + 2 : ay - 2;
+        ctx.beginPath(); ctx.moveTo(ax - 4, edge); ctx.lineTo(ax + 4, edge); ctx.lineTo(ax, tip); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = "#fff";
+        ctx.fillText(text, box.x + box.w / 2, box.y + box.h / 2 + 0.5);
       }
     }
   }

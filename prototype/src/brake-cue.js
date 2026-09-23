@@ -20,6 +20,8 @@
     none: { label: "No brake", chip: "No brake", rgb: "127, 139, 137" },
   };
   const VERY = 3;
+  const FLASH_HOLD = 0.8; // s the bar shows your grade's colour after you brake…
+  const FLASH_DRAIN = 0.3; // …then fades out over this
   const MATCH_BEFORE = 4; // s: a brake-on this long before a brake point still counts as that zone's
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -129,7 +131,8 @@
         for (const k of cueIdx) {
           const o = this.occ(m, k);
           const r = this.results.get(o.key);
-          if (r ? r.event && r.event.active : A <= o.e) { cur = o; break; }
+          // Still braking, or the grade still showing, keeps a zone current.
+          if (r ? r.event && (r.event.active || now.t - r.event.onT < FLASH_HOLD + FLASH_DRAIN) : A <= o.e) { cur = o; break; }
         }
       }
       const z = zones[cur.k];
@@ -151,6 +154,7 @@
         target: z.peak,
         live: now.brake,
         peak: null,
+        flash: null, // { grade, alpha }: the bar in your grade's colour, just after you brake
         verdict: null,
         pips: null,
         cueZones: cueIdx,
@@ -161,6 +165,10 @@
         st.mode = "braking";
         st.fill = Math.max(st.join, clamp((cur.s + r.dt - armAt) / cfg.lead, 0, 1));
         st.peak = r.event.peak;
+        const since = now.t - r.event.onT;
+        if (since < FLASH_HOLD + FLASH_DRAIN) {
+          st.flash = { grade: gradeOf(r.dt, cfg.tol, cfg.perfect), alpha: since < FLASH_HOLD ? 1 : 1 - (since - FLASH_HOLD) / FLASH_DRAIN };
+        }
       } else if (A < joinAt) {
         st.mode = "idle";
       } else if (A < cueAt) {
@@ -302,9 +310,15 @@
       b.toggleAttribute("data-joined", s.mode === "countdown" && s.join > 0.001);
       const css = { fill: s.fill || 0, join: s.join || 0, live: s.live || 0, target: s.target || 0, peak: s.peak == null ? -1 : s.peak };
       for (const k in css) b.style.setProperty(`--${k}`, css[k].toFixed(4));
+      const f = s.flash;
+      if (f) {
+        b.dataset.flash = f.grade;
+        b.style.setProperty("--flash", GRADES[f.grade].rgb);
+        b.style.setProperty("--flash-a", clamp(f.alpha, 0, 1).toFixed(3));
+      } else delete b.dataset.flash;
 
-      // BRAKE only when it means it; idle leaves the cap empty.
-      this.cap.textContent = mode === "countdown" ? String(s.beat) : mode === "brake" || mode === "braking" ? "Brake" : mode === "idle" ? "" : "–";
+      // BRAKE only when it means it: at the brake point and while the grade shows.
+      this.cap.textContent = mode === "countdown" ? String(s.beat) : mode === "brake" || f ? "Brake" : mode === "noref" || mode === "nozones" ? "–" : "";
       this.msg.textContent =
         mode === "idle" ? `NEXT  ${distText(s.dist)}` :
         mode === "noref" ? "NO REFERENCE LAP" :

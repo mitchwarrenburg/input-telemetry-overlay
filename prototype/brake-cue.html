@@ -123,8 +123,8 @@
         <ol class="callouts">
           <li><span class="dot-n">1</span><span><b>Zone and distance.</b> Which brake zone is next (numbered in lap order) and how far to its brake point.</span></li>
           <li><span class="dot-n">2</span><span><b>Zone strip.</b> One pip per zone, coloured by your last grade there. This lap's are bright, last lap's are dim, the next zone is ringed.</span></li>
-          <li><span class="dot-n">3</span><span><b>Countdown bar.</b> Three one-count segments filling toward the cap: green for 3, yellow for 2, red for 1.</span></li>
-          <li><span class="dot-n">4</span><span><b>Cap.</b> The count, outlined in the colour of the segment filling, then <b>BRAKE</b> in solid red, flashing, at the reference brake point.</span></li>
+          <li><span class="dot-n">3</span><span><b>Countdown bar.</b> Three one-count segments filling toward the cap in red that darkens as the brake point nears.</span></li>
+          <li><span class="dot-n">4</span><span><b>Cap.</b> The count, then <b>BRAKE</b>: at the reference brake point the bar and the cap go solid red with a slight glow. When you brake, the bar shows your grade's colour for a moment, then empties (for Perfect the whole bar and the cap light purple).</span></li>
           <li><span class="dot-n">5</span><span><b>Target.</b> The zone's reference peak, outlined in red. The gauge fills with your pressure up to the white target line.</span></li>
           <li><span class="dot-n">6</span><span><b>Timing.</b> The last zone's grade, how far off the reference brake-on you were in seconds and metres (− early, + late), and your peak against the target.</span></li>
         </ol>
@@ -153,20 +153,18 @@
     <section>
       <h2>On the graph</h2>
       <div class="graph-host"><section class="ito-overlay is-locked" id="graphOverlay"><canvas class="ito-canvas" id="graph"></canvas></section></div>
-      <p class="note" style="margin-top: 10px">With <b>Brake points on the graph</b> on: a red <b>▼</b> and dashed line at every reference brake point
-        (so the look-ahead shows the next one coming), and under the baseline a short bar in the grade's colour from the
-        reference brake point to where you braked.</p>
+      <p class="note" style="margin-top: 10px">With <b>Brake points on the graph</b> on: a small red <b>▲</b> on the 0% line at every reference brake point
+        (so the look-ahead shows the next one coming), and under it a short bar in the grade's colour from the
+        reference brake point to where you braked. The top of the plot is left to the peak labels.</p>
     </section>
 
     <section id="labels">
-      <h2>Peak labels (redesign)</h2>
+      <h2>Peak labels</h2>
       <ol class="rules">
-        <li><b>Off the data.</b> The graph records, pixel column by pixel column, where every line it drew passes (your throttle and brake, the reference edges) and how far the reference fills reach. Each label tries about 50 spots around its peak and takes the one that costs least: crossing a line costs most, covering fill a little, a long leader or one that crosses a line some more.</li>
-        <li><b>Left out rather than in the way.</b> A reference label may graze a line by a column or two, yours by a quarter of its width. A label with no such spot isn't drawn. Labels never sit on the cursor, its dots or the brake point markers.</li>
-        <li><b>One tag per braking zone.</b> Your peak and the reference's in the same zone share one tag: yours in the solid pill, the reference's beside it as a plain number. If the pair doesn't fit it splits into two labels.</li>
-        <li><b>Lighter.</b> Reference peaks are plain numbers with a dark halo, no box, so they cover only their own strokes. No "%" (the axis says it). A hairline leader joins a label to its dot only when it sits more than 7 px away.</li>
-        <li><b>Most useful first.</b> The zone you're braking in, then the next zone ahead, then by distance from the car with big peaks ahead of light dabs. Small graphs show fewer: leaders stay under 45% of the plot's height and there's one label per 80 px of width.</li>
-        <li><b>Steady.</b> A label keeps last frame's spot unless another is clearly better, and glides (about 0.1 s) when it moves; mid-glide it can briefly graze a line. Played back over two laps (simulated driver), each label changes spot about once every 4 s on average, about 0.4 changes a second across the graph, mostly while your peak is still rising. A pair splitting into two labels, or joining back, jumps rather than glides.</li>
+        <li><b>Reference peaks.</b> A light dotted line runs from the top of the plot through each reference peak (the hollow dot) down to the 0% line, under your lines. Its percentage is pinned to the top of the line, so the reference labels sit in one row along the top and never move relative to their peaks. Where two would overlap, the one farther from the car shifts up to 8 px, and if that isn't enough it's left off; its line stays.</li>
+        <li><b>Your peaks.</b> A solid red pill whose pointer touches the apex of your brake line, exactly at the peak. It sits above the apex, and drops below it only when above would run into a reference label, the header or another of your pills. The one you're braking in rises with your pressure.</li>
+        <li><b>Nothing else moves them.</b> No searching for space and no leader lines: the reference numbers stay at the top, yours stay on your trace. The cursor draws over the reference row as a label passes it; your pills draw over everything.</li>
+        <li><b>Brake point marks move down.</b> The countdown's brake point marks now sit on the 0% line (▲), leaving the top row to the labels.</li>
       </ol>
       <div class="shots wide" id="shotsWide" style="margin-top: 14px"></div>
       <div class="shots" id="shots" style="margin-top: 12px"></div>
@@ -199,7 +197,6 @@
   <script src="src/lap.js"></script>
   <script src="src/sim.js"></script>
   <script src="src/live-trace.js"></script>
-  <script src="src/peak-labels.js"></script>
   <script src="src/graph.js"></script>
   <script src="src/brake-cue.js"></script>
   <script src="src/board.js"></script>

@@ -13,18 +13,21 @@ serve the folder (`python -m http.server 8617`) and visit `http://localhost:8617
   It's lined up with the car by `LapDistPct`, and it runs ahead of the car as a preview.
 - **Live inputs (solid lines):** your throttle and brake, drawn up to the car position (the
   white cursor, with the current lap distance in the pill below it).
-- **Brake peak labels:** the highest % in each braking zone. Solid red pills mark your
-  peaks and update while you're still on the brake; the reference's are plain numbers with
-  a dark halo. Your peak and the reference's in one zone share a tag. Each label takes the
-  spot around its peak that covers the least of the traces, keeps it from frame to frame,
-  and is left out when no spot is clear (`src/peak-labels.js`).
+- **Brake peak labels:** the highest % in each braking zone. Each reference peak gets a
+  light dotted line through it, with its percentage pinned to the top of the line, so the
+  reference labels sit in a row along the top of the graph. Your peaks get a solid red pill
+  whose pointer touches the apex of your brake line (below the apex if above is taken); it
+  rises with your pressure while you're still on the brake.
 - **Brake point countdown:** a second window that counts 3-2-1-BRAKE into each of the
   reference lap's brake points, with a bar filling in step and the zone's target peak
-  pressure beside it; the three segments fill green, yellow and red. When you brake, it
-  grades your timing against the reference brake point (very early, early, good, perfect,
-  late, very late, or no brake) in seconds and metres, and
+  pressure beside it. The bar fills in red that darkens toward the brake point, goes solid
+  red with a slight glow at it, and on your brake-on shows your grade's colour for a moment
+  before emptying (for Perfect, the whole bar and the cap light purple). It grades your
+  timing against the reference brake point (very early, early, good, perfect, late, very
+  late, or no brake) in seconds and metres, and
   keeps a strip of pips with your grade in every zone. With **Brake points on the graph**
-  on, the graph marks each reference brake point (red ▼) and underlines your gap to it.
+  on, the graph marks each reference brake point (red ▲ on the 0% line) and underlines your
+  gap to it.
   [`brake-cue.html`](brake-cue.html) is the design board: every state, the grades, sizes,
   the behaviour spec, and the peak label rules with examples.
 - **Resizing:** hover the overlay to show 8 anchors (corners and edges). Drag one to
@@ -49,7 +52,6 @@ shortens to "THR / BRK" below 330 px, and the x-axis labels hide below 118 px ta
 | `index.html` | Overlay, settings popover and prototype harness markup |
 | `src/styles.css` | Design tokens and all styling |
 | `src/graph.js` | Canvas renderer: fills, lines, cursor, axes, S/F marker, peak labels |
-| `src/peak-labels.js` | Where peak labels go: a per-column mask of the drawn traces and a scored search for each label's spot |
 | `src/lap.js` | Garage 61 CSV parser and lap model (brake zones, `LapDistPct` lookups, downshift blips flattened as `src/lap.rs` does) |
 | `src/live-trace.js` | Rolling buffer of live samples and brake events (brake-on point and peak) |
 | `src/brake-cue.js` | Brake point countdown: zone timing and grading, the window's renderer, beeps |

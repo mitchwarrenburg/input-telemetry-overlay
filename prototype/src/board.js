@@ -95,14 +95,16 @@
   [
     { tag: "Approach", title: "Next zone", state: S({ mode: "idle", beat: 0, fill: 0, dist: 540 }),
       note: "Off the brake and not yet in range: distance to the next brake point, its target, and the last zone's result." },
-    { tag: "−3 s", title: "3", state: S({ beat: 3, fill: 0.08, dist: 186 }), note: "The count starts 3 s out (a setting). The first segment fills green." },
-    { tag: "−2 s", title: "2", state: S({ beat: 2, fill: 0.4, dist: 124 }), note: "The second fills yellow; the fill moves continuously." },
-    { tag: "−1 s", title: "1", state: S({ beat: 1, fill: 0.82, dist: 40 }), note: "The last fills red." },
-    { tag: "0 s", title: "BRAKE", state: S({ mode: "brake", beat: 0, fill: 1, dist: 0 }), note: "At the reference brake point. Flashes, then holds solid." },
-    { tag: "Braking", title: "On the brake", state: S({ mode: "braking", beat: 0, fill: 1, live: 0.66, peak: 0.66, verdict: verdict("perfect", 0.02, 1, 0.66, 0.72, 4, { current: true }), pips: pips(["good", "late", "good", "perfect"]) }),
-      note: "Graded the moment you brake. The bar dims; the gauge fills toward the target line." },
-    { tag: "Released", title: "Result", state: S({ mode: "idle", beat: 0, fill: 0, zoneNo: 5, dist: 412, target: 0.48, verdict: verdict("perfect", 0.02, 1, 0.7, 0.72, 4), pips: pips(["good", "late", "good", "perfect"], 4) }),
-      note: "Holds until the next zone is decided; the pip for Z4 turns purple." },
+    { tag: "−3 s", title: "3", state: S({ beat: 3, fill: 0.08, dist: 186 }), note: "The count starts 3 s out (a setting), filling in red." },
+    { tag: "−2 s", title: "2", state: S({ beat: 2, fill: 0.4, dist: 124 }), note: "The fill moves continuously, the red darkening as it goes." },
+    { tag: "−1 s", title: "1", state: S({ beat: 1, fill: 0.82, dist: 40 }), note: "Darkest just before the brake point." },
+    { tag: "0 s", title: "BRAKE", state: S({ mode: "brake", beat: 0, fill: 1, dist: 0 }), note: "At the reference brake point: the whole bar and the cap solid red, with a slight glow." },
+    { tag: "+0.1 s", title: "Graded", state: S({ mode: "braking", beat: 0, fill: 1, live: 0.5, peak: 0.5, flash: { grade: "good", alpha: 1 }, verdict: verdict("good", 0.05, 3, 0.5, 0.72, 4, { current: true }), pips: pips(["good", "late", "good", "good"]) }),
+      note: "The moment you brake, the bar takes your grade's colour for 0.8 s, then fades out over 0.3 s." },
+    { tag: "+1.1 s", title: "Emptied", state: S({ mode: "braking", beat: 0, fill: 1, live: 0.66, peak: 0.7, verdict: verdict("good", 0.05, 3, 0.7, 0.72, 4, { current: true }), pips: pips(["good", "late", "good", "good"]) }),
+      note: "Empty again while you're still braking; the gauge fills toward the target line." },
+    { tag: "Released", title: "Result", state: S({ mode: "idle", beat: 0, fill: 0, zoneNo: 5, dist: 412, target: 0.48, verdict: verdict("good", 0.05, 3, 0.7, 0.72, 4), pips: pips(["good", "late", "good", "good"], 4) }),
+      note: "The result holds until the next zone is decided; the pip for Z4 turns green." },
   ].forEach((s) => card(seq, { ...s, w: 236, h: 88 }));
 
   // ---------- grade scale ----------
@@ -124,15 +126,18 @@
   // ---------- other cases ----------
   const cases = $("#cases");
   [
+    { tag: "Perfect", title: "Within ±0.03 s",
+      state: S({ mode: "braking", beat: 0, fill: 1, live: 0.58, peak: 0.58, flash: { grade: "perfect", alpha: 1 }, verdict: verdict("perfect", 0.01, 1, 0.58, 0.72, 4, { current: true }), pips: pips(["good", "late", "good", "perfect"]) }),
+      note: "The whole bar and the cap light purple with a glow, then empty like any other grade." },
     { tag: "Early", title: "Braked before the count ended",
-      state: S({ mode: "braking", beat: 0, fill: 0.88, live: 0.52, peak: 0.52, verdict: verdict("veryEarly", -0.27, -19, 0.52, 0.72, 4, { current: true }), pips: pips(["good", "late", "good", "veryEarly"]) }),
-      note: "The bar stops where you braked and dims; the gap to the cap is how early." },
+      state: S({ mode: "braking", beat: 0, fill: 0.88, live: 0.52, peak: 0.52, flash: { grade: "veryEarly", alpha: 1 }, verdict: verdict("veryEarly", -0.27, -19, 0.52, 0.72, 4, { current: true }), pips: pips(["good", "late", "good", "veryEarly"]) }),
+      note: "The bar stops where you braked and shows the early colour; the gap to the cap is how early." },
     { tag: "Late", title: "Past the brake point, not braking yet",
       state: S({ mode: "brake", beat: 0, fill: 1, dist: -8, verdict: verdict("late", 0.13, 9, null, 0.72, 4, { pending: true, current: true }) }),
-      note: "BRAKE stays up and the outlined grade counts up until you brake." },
+      note: "The bar stays solid red and the outlined grade counts up until you brake." },
     { tag: "Late", title: "Braked late",
-      state: S({ mode: "braking", beat: 0, fill: 1, live: 0.8, peak: 0.84, verdict: verdict("veryLate", 0.29, 21, 0.84, 0.72, 4, { current: true }), pips: pips(["good", "late", "good", "veryLate"]) }),
-      note: "Graded when the brake goes on; peak marker (pink) shows your highest pressure so far." },
+      state: S({ mode: "braking", beat: 0, fill: 1, live: 0.8, peak: 0.84, flash: { grade: "veryLate", alpha: 1 }, verdict: verdict("veryLate", 0.29, 21, 0.84, 0.72, 4, { current: true }), pips: pips(["good", "late", "good", "veryLate"]) }),
+      note: "Graded when the brake goes on; the gauge's pink mark is your highest pressure so far." },
     { tag: "Short straight", title: "Count joins at 2",
       state: S({ beat: 2, fill: 0.55, join: 0.4, zoneNo: 2, dist: 58, target: 0.46, verdict: verdict("late", 0.12, 7, 0.7, 0.68, 1), pips: pips(["late"], 1) }),
       note: "The previous zone ended less than 3 s before this brake point. The skipped part is hatched." },
@@ -213,12 +218,12 @@
     document.fonts && document.fonts.ready.then(render);
   }
   shot($("#shotsWide"), 1060, 680, 170,
-    "Two zones behind the car, each one tag (yours solid, the reference plain) sitting in the clear space over its zone.");
+    "Two zones behind the car. The reference peaks' numbers sit in the row along the top, each on a dotted line through its peak; yours sit on the apex of your brake line.");
   shot($("#shotsWide"), 3960, 680, 170,
-    "A tight run of zones. Each tag takes the open space above its zone; the 11 is a light dab of yours with no reference zone to pair with.");
+    "A tight run of zones: the dotted lines show where the reference peaked, so you can see yours land before or after it.");
   shot($("#shotsWide"), 4980, 680, 170,
-    "The next zone's reference peak (77) sits just above it in the look-ahead, clear of the fill's edge.");
-  shot($("#shots"), 3960, 300, 190, "Narrow: the same run of zones, with short leaders where a tag had to move off its peak.");
-  shot($("#shots"), 1060, 272, 90, "The smallest graph: two labels at most, leaders kept short. Neither pair fits whole, so they split and only your peaks find room.");
-  shot($("#shots"), 2140, 272, 90, "The pair behind the car fits (88 72); the reference 48 sits just above its peak.");
+    "The next zone's reference peak in the look-ahead: its number waits at the top of its line.");
+  shot($("#shots"), 3960, 300, 190, "Narrow: the same labels, in the same places.");
+  shot($("#shots"), 1060, 272, 90, "The smallest graph: the reference row fills the top, so your pills hang below their apexes.");
+  shot($("#shots"), 2140, 272, 90, "A high peak of yours near a reference label: your pill drops below the apex instead.");
 })();

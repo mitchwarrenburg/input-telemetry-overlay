@@ -233,10 +233,10 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
    chips and pips can tint them. */
 .ito-cue {
   --brake-ink: #e0301f; /* solid red behind white text (4.5:1) */
-  /* The three counts, first to last. */
-  --count-1: #2fd46f;
-  --count-2: #ffd02e;
-  --count-3: var(--brake);
+  /* The count builds in red, darker the nearer the brake point. */
+  --count-light: #ff6f62;
+  --count-deep: #8a1a11;
+  --perfect: 178, 124, 255;
   width: 360px;
   height: 96px;
 }
@@ -287,13 +287,12 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 .cue-fill, .cue-join { position: absolute; top: 0; bottom: 0; }
-/* Spans the whole track and is clipped to the filled part, so each segment keeps its own
-   colour: green for the first count, yellow for the second, red for the last. */
+/* Spans the whole track and is clipped to the filled part, so the red darkens as it
+   builds toward the brake point. */
 .cue-fill {
   left: 0;
   right: 0;
-  background: linear-gradient(90deg,
-    var(--count-1) 0 33.333%, var(--count-2) 33.333% 66.667%, var(--count-3) 66.667% 100%);
+  background: linear-gradient(90deg, var(--count-light), var(--brake) 45%, var(--count-deep));
   clip-path: inset(0 calc((1 - var(--fill)) * 100%) 0 calc(var(--join) * 100%));
 }
 /* The part a short straight skipped. */
@@ -331,15 +330,14 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 }
 .cue-cap span { display: block; }
 
-/* The cap takes the colour of the segment that's filling. */
-.cue-body[data-mode="countdown"] { --count: var(--count-1); }
-.cue-body[data-beat="2"] { --count: var(--count-2); }
-.cue-body[data-beat="1"] { --count: var(--count-3); }
+/* The cap: red outline, its tint deepening with each count. */
 .cue-body[data-mode="countdown"] .cue-cap {
   color: #fff;
-  box-shadow: inset 0 0 0 1.5px var(--count);
-  background: color-mix(in srgb, var(--count) 18%, transparent);
+  box-shadow: inset 0 0 0 1.5px var(--brake);
+  background: rgba(255, 61, 46, 0.1);
 }
+.cue-body[data-beat="2"] .cue-cap { background: rgba(200, 40, 28, 0.22); }
+.cue-body[data-beat="1"] .cue-cap { background: rgba(138, 26, 17, 0.45); }
 .cue-body[data-mode="countdown"] .cue-cap span { font-size: clamp(22px, 34cqh, 44px); letter-spacing: 0; font-variant-numeric: tabular-nums; }
 /* Each count pops in; alternating names restart the animation on every change. */
 .cue-body[data-beat="3"] .cue-cap span, .cue-body[data-beat="1"] .cue-cap span { animation: cue-pop-a 0.22s ease-out; }
@@ -347,14 +345,30 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 @keyframes cue-pop-a { from { transform: scale(1.35); opacity: 0.4; } }
 @keyframes cue-pop-b { from { transform: scale(1.35); opacity: 0.4; } }
 
-/* BRAKE is solid red and flashes. */
-.cue-body[data-mode="brake"] .cue-cap,
-.cue-body[data-mode="braking"] .cue-cap { color: #fff; background: var(--brake-ink); box-shadow: none; }
-.cue-body[data-mode="brake"] .cue-cap { animation: cue-flash 0.2s ease-in-out 4 alternate; }
-@keyframes cue-flash { to { background: #ff6a5c; } }
-/* On the brake: the bar stops where you braked and dims, so the eye moves to the target
-   gauge. Braked early, the unfilled part up to the cap is how early. */
-.cue-body[data-mode="braking"] .cue-fill { opacity: 0.45; }
+/* At the brake point: the whole bar and the cap solid red, with a slight glow. */
+.cue-body[data-mode="brake"] .cue-fill { background: var(--brake); }
+.cue-body[data-mode="brake"] .cue-cap { color: #fff; background: var(--brake-ink); box-shadow: none; }
+.cue-body[data-mode="brake"] .cue-track,
+.cue-body[data-mode="brake"] .cue-cap { box-shadow: 0 0 10px rgba(255, 61, 46, 0.5); }
+
+/* On the brake: the bar turns your timing grade's colour for a moment (--flash-a runs 1
+   to 0), then empties. Braked early, it stops short of the cap by how early. */
+.cue-body[data-flash] .cue-fill { background: rgb(var(--flash)); opacity: var(--flash-a); }
+.cue-body[data-flash] .cue-cap {
+  color: rgba(255, 255, 255, calc(0.4 + 0.6 * var(--flash-a)));
+  background: rgba(224, 48, 31, var(--flash-a));
+}
+/* Perfect: the whole bar and the cap light purple, with a glow. */
+.cue-body[data-flash="perfect"] .cue-fill { clip-path: none; background: rgb(var(--perfect)); }
+.cue-body[data-flash="perfect"] .cue-join { opacity: 0; }
+.cue-body[data-flash="perfect"] .cue-cap {
+  color: rgba(26, 11, 46, calc(0.4 + 0.6 * var(--flash-a)));
+  background: rgba(var(--perfect), var(--flash-a));
+}
+.cue-body[data-flash="perfect"] .cue-track,
+.cue-body[data-flash="perfect"] .cue-cap { box-shadow: 0 0 12px rgba(var(--perfect), calc(0.7 * var(--flash-a))); }
+/* After it, the bar stays empty while you're still braking; the gauge has your pressure. */
+.cue-body[data-mode="braking"]:not([data-flash]) .cue-fill { opacity: 0; }
 .cue-body[data-mode="noref"] .cue-cap,
 .cue-body[data-mode="nozones"] .cue-cap { color: var(--hud-muted); }
 
@@ -637,12 +651,31 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px 
   color: var(--ui-muted);
   font-size: 12px;
 }
-.label-key span { display: inline-flex; align-items: center; gap: 7px; }
+.label-key span { display: inline-flex; align-items: flex-start; gap: 7px; }
 .key-pill { padding: 3px 5px; border-radius: 4px; font: 700 11px/1 var(--font-hud); font-style: normal; }
+/* As on the graph: your peak's pill points down at the apex; the reference's label sits
+   on top of a dotted line. */
+.key-pill { position: relative; margin-bottom: 9px; }
 .key-live { background: #e0301f; color: #fff; }
-/* The graph draws reference peaks as plain numbers with a dark halo, not in a box. */
-.key-ref { padding: 3px 1px; color: #ffb8b0; font-weight: 600; text-shadow: 0 0 2px rgb(var(--hud-surface)), 0 0 2px rgb(var(--hud-surface)); }
-.key-pair { display: inline-flex; align-items: center; gap: 2px; font-style: normal; }
+.key-live::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  margin-left: -4px;
+  border: 4px solid transparent;
+  border-top-color: #e0301f;
+  border-bottom: 0;
+}
+.key-ref { border: 1px solid rgba(232, 239, 238, 0.42); background: rgb(var(--hud-surface)); color: var(--hud-text); font-weight: 600; }
+.key-ref::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  height: 9px;
+  border-left: 1px dotted rgba(232, 239, 238, 0.6);
+}
 
 /* Grade key (Brakes tab) */
 .grade-key {
