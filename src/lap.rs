@@ -5,6 +5,7 @@
 //! corner for corner.
 
 use std::fmt;
+use std::ops::Range;
 
 /// A brake event starts when the pedal goes above this…
 pub const BRAKE_ON: f32 = 0.05;
@@ -55,7 +56,7 @@ pub struct Lap {
     pub speed: Option<Vec<f32>>,
     pub zones: Vec<BrakeZone>,
     /// Latitude/longitude (degrees) where the lap starts, when the file has Lat/Lon.
-    /// Compared with the session's start/finish position to confirm the track.
+    /// Compared with the session's track position to confirm the venue.
     pub start_latlon: Option<(f64, f64)>,
 }
 
@@ -211,22 +212,24 @@ pub fn parse_garage61_csv(text: &str, file_name: &str) -> Result<Lap, LapError> 
         latlon.push(i_lat.and_then(num).zip(i_lon.and_then(num)).filter(|&(la, lo)| la != 0.0 || lo != 0.0));
     }
 
-    // Exports often carry a sample or two from the neighbouring lap: drop whichever
-    // side of the start/finish wrap is the short one.
-    let mut i = 1;
-    while i < pct.len() {
-        if pct[i] < pct[i - 1] - 0.5 {
-            let (a, b) = if i > pct.len() / 2 { (0, i) } else { (i, pct.len()) };
-            pct = pct[a..b].to_vec();
-            brake = brake[a..b].to_vec();
-            throttle = throttle[a..b].to_vec();
-            speed = speed[a..b].to_vec();
-            latlon = latlon[a..b].to_vec();
-            i = 1;
-        } else {
-            i += 1;
+    // Exports often carry a sample or two from the neighbouring lap: keep the longest run
+    // between start/finish wraps (the later one on a tie). One pass, so a file full of
+    // wraps can't stall the parse.
+    let mut keep = 0..0;
+    let mut start = 0;
+    for i in 1..=pct.len() {
+        if i == pct.len() || pct[i] < pct[i - 1] - 0.5 {
+            if i - start >= keep.len() {
+                keep = start..i;
+            }
+            start = i;
         }
     }
+    keep_range(&mut pct, &keep);
+    keep_range(&mut brake, &keep);
+    keep_range(&mut throttle, &keep);
+    keep_range(&mut speed, &keep);
+    keep_range(&mut latlon, &keep);
     if (pct.len() as f64) < TELEMETRY_HZ * 10.0 {
         return Err(LapError::TooShort);
     }
@@ -259,6 +262,12 @@ pub fn parse_garage61_csv(text: &str, file_name: &str) -> Result<Lap, LapError> 
         speed: i_spd.map(|_| speed),
         start_latlon,
     })
+}
+
+/// Keeps `range` of `v`.
+fn keep_range<T>(v: &mut Vec<T>, range: &Range<usize>) {
+    v.truncate(range.end);
+    v.drain(..range.start);
 }
 
 impl Lap {
@@ -428,6 +437,42 @@ mod tests {
         assert_eq!(lap.hz, TELEMETRY_HZ);
         assert!((lap.lap_time - 20.0).abs() < 1e-9);
         assert!(lap.track_length_est.is_none());
+    }
+
+    #[test]
+    fn many_wraps_parse_in_linear_time() {
+        // 80,000 rows flipping between 0.9 and 0.1 (took 14 s to parse when each wrap
+        // re-copied the rest of the file), then the same flicker before a real lap.
+        let mut flicker = String::from("LapDistPct,Brake,Throttle\n");
+        for i in 0..80_000 {
+            flicker.push_str(if i % 2 == 0 { "0.1,0,1\n" } else { "0.9,0,1\n" });
+        }
+        let start = std::time::Instant::now();
+        assert_eq!(parse_garage61_csv(&flicker, "x.csv").unwrap_err(), LapError::TooShort);
+        let mut csv = flicker.clone();
+        for i in 0..7000 {
+            csv.push_str(&format!("{:.6},0.1,0.9\n", i as f64 / 7000.0));
+        }
+        let lap = parse_garage61_csv(&csv, "x.csv").unwrap();
+        assert!(start.elapsed() < std::time::Duration::from_secs(5), "{:?}", start.elapsed());
+        assert_eq!(lap.n(), 7000);
+        assert_eq!((lap.pct[0], lap.brake[0]), (0.0, 0.1));
+    }
+
+    #[test]
+    fn the_longest_run_between_wraps_is_kept() {
+        let mut csv = String::from("LapDistPct,Brake,Throttle\n");
+        let mut rows = |from: f64, n: usize, step: f64, brake: f64| {
+            for i in 0..n {
+                csv.push_str(&format!("{:.6},{brake},0\n", from + i as f64 * step));
+            }
+        };
+        rows(0.95, 300, 0.0001, 0.1); // the end of the previous lap
+        rows(0.0, 700, 1.0 / 700.0, 0.2); // the lap
+        rows(0.0, 699, 1.0 / 700.0, 0.3); // the next lap, one sample short
+        let lap = parse_garage61_csv(&csv, "x.csv").unwrap();
+        assert_eq!(lap.n(), 700);
+        assert!(lap.brake.iter().all(|&b| b == 0.2));
     }
 
     #[test]

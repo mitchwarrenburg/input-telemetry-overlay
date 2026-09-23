@@ -30,7 +30,9 @@ pub struct SessionInfo {
     /// `WeekendInfo.TrackLength` in metres. `LapDistPct` is relative to this one,
     /// not `TrackLengthOfficial`.
     pub track_length_m: Option<f64>,
-    /// `WeekendInfo.TrackLatitude` / `TrackLongitude`: the start/finish line, degrees.
+    /// `WeekendInfo.TrackLatitude` / `TrackLongitude`, degrees: a point on the track that
+    /// places the venue. Not always the start/finish line: about 200 m from it at Spa and
+    /// 267 m at Suzuka.
     pub track_latlon: Option<(f64, f64)>,
     /// Player car's `CarScreenName`, e.g. `Ferrari 296 GT3`.
     pub car_name: Option<String>,

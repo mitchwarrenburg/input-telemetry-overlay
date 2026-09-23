@@ -5,6 +5,16 @@ use std::collections::VecDeque;
 
 use crate::lap::{BRAKE_OFF, BRAKE_ON};
 
+/// Most samples a trace keeps, whatever [`LiveTrace::prune`] allows: 200 s at 60 Hz, which
+/// holds the widest distance window (1600 m) down to 8 m/s, below pit-lane limits. Bounds a
+/// car that sits still with its pedals moving; a still car with steady pedals costs two
+/// samples (see [`LiveTrace::push`]).
+pub const MAX_SAMPLES: usize = 12_000;
+/// Samples within this many metres of each other are the car standing still.
+const STILL_M: f64 = 0.05;
+/// Pedal changes smaller than this (0..1) don't show on the graph.
+const STILL_PEDAL: f32 = 0.002;
+
 /// One live sample on the graph.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LiveSample {
@@ -63,8 +73,24 @@ impl LiveTrace {
         self.events.iter()
     }
 
+    /// Appends a sample. While the car stands still with steady pedals, the stop is kept as
+    /// its first sample plus the latest one (moved forward in time), so a parked car doesn't
+    /// grow the trace and the time axis still draws a flat line across the stop. Past
+    /// [`MAX_SAMPLES`] the oldest samples, and the brake events before them, go.
     pub fn push(&mut self, s: LiveSample) {
-        self.samples.push_back(s);
+        let n = self.samples.len();
+        if n >= 2 && still(&self.samples[n - 2], &self.samples[n - 1]) && still(&self.samples[n - 2], &s) {
+            self.samples[n - 1] = s;
+        } else {
+            self.samples.push_back(s);
+            if self.samples.len() > MAX_SAMPLES {
+                self.samples.pop_front();
+                let first_t = self.samples.front().map_or(s.t, |f| f.t);
+                while self.events.front().is_some_and(|e| !e.active && e.peak_t < first_t) {
+                    self.events.pop_front();
+                }
+            }
+        }
         match self.events.back_mut().filter(|e| e.active) {
             None => {
                 if s.brake > BRAKE_ON {
@@ -108,6 +134,13 @@ impl LiveTrace {
     pub fn first_at_or_after(&self, value: f64, by_time: bool) -> usize {
         self.samples.partition_point(|s| (if by_time { s.t } else { s.d }) < value)
     }
+}
+
+/// `b` is where `a` was, with the same pedals, as far as the graph can show.
+fn still(a: &LiveSample, b: &LiveSample) -> bool {
+    (a.d - b.d).abs() < STILL_M
+        && (a.brake - b.brake).abs() < STILL_PEDAL
+        && (a.throttle - b.throttle).abs() < STILL_PEDAL
 }
 
 /// What a telemetry frame means for the trace.
@@ -227,6 +260,59 @@ mod tests {
         assert_eq!(tr.events().count(), 0);
         assert_eq!(tr.first_at_or_after(20.0, true), 10);
         assert_eq!(tr.first_at_or_after(20.5, false), 11);
+    }
+
+    /// Drives 100 samples 1 m apart, then stands still at 60 Hz for `secs` with the pedals
+    /// from `pedals(frame)` (throttle, brake), pruning like `LiveFeed::push`.
+    fn stop(secs: f64, pedals: impl Fn(usize) -> (f32, f32)) -> LiveTrace {
+        let mut tr = LiveTrace::new();
+        for i in 0..100 {
+            tr.push(s(i as f64 / 60.0, i as f64, 0.0));
+        }
+        let (t0, d) = (100.0 / 60.0, 99.0);
+        for i in 0..(secs * 60.0) as usize {
+            let (throttle, brake) = pedals(i);
+            let t = t0 + i as f64 / 60.0;
+            tr.push(LiveSample { t, d, brake, throttle });
+            tr.prune(t - 25.0, d - 1600.0);
+        }
+        tr
+    }
+
+    #[test]
+    fn a_stop_keeps_its_first_and_latest_sample() {
+        let tr = stop(600.0, |_| (0.0, 0.6));
+        assert_eq!(tr.len(), 102, "the drive, then the stop's first and latest sample");
+        let (first, last) = (tr.samples()[100], tr.samples()[101]);
+        assert_eq!((first.t, first.d, first.brake), (100.0 / 60.0, 99.0, 0.6));
+        assert!((last.t - (100.0 / 60.0 + 599.0 + 59.0 / 60.0)).abs() < 1e-9, "latest time: {}", last.t);
+        assert_eq!((last.d, last.brake), (99.0, 0.6));
+        // On the time axis the stop is one flat segment across the whole window.
+        assert_eq!(tr.first_at_or_after(last.t - 8.0, true), 101);
+        assert_eq!(tr.events().count(), 1);
+    }
+
+    #[test]
+    fn a_stop_with_moving_pedals_is_capped() {
+        // Blipping the throttle and pumping the brake (one press a second) for 10 minutes.
+        let tr = stop(600.0, |i| ((i % 7) as f32 / 10.0, if i % 60 < 30 { 0.8 } else { 0.0 }));
+        assert_eq!(tr.len(), MAX_SAMPLES);
+        let first = tr.samples()[0].t;
+        assert!(first > 600.0 - MAX_SAMPLES as f64 / 60.0, "the oldest went first: {first}");
+        assert!(tr.events().all(|e| e.peak_t >= first), "no events from before the trace");
+        assert!(tr.events().count() <= MAX_SAMPLES / 60 + 1);
+    }
+
+    #[test]
+    fn a_creeping_car_keeps_its_progress() {
+        let mut tr = LiveTrace::new();
+        for i in 0..600 {
+            tr.push(s(i as f64 / 60.0, i as f64 * 0.01, 0.0)); // 0.6 m/s
+        }
+        // A sample every 4-5 cm, and always the newest.
+        assert!((120..=160).contains(&tr.len()), "{}", tr.len());
+        assert!((tr.last().unwrap().d - 5.99).abs() < 1e-9);
+        assert!(tr.samples().iter().zip(tr.samples().iter().skip(1)).all(|(a, b)| b.d - a.d <= STILL_M + 0.01));
     }
 
     #[test]

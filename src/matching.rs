@@ -3,16 +3,20 @@
 //! Garage 61 names tracks and cars after iRacing's Data API ("Silverstone Circuit
 //! (Grand Prix)"), while the sim's session info uses different strings ("Silverstone
 //! Circuit" / "Arena Grand Prix"). So the track is decided physically when possible:
-//! the lap's length and where it starts, against the session's `TrackLength` and
-//! start/finish position. Names are the fallback.
+//! where the lap starts places the venue (against the session's `TrackLatitude` /
+//! `TrackLongitude`) and its length the layout (against `TrackLength`). Names are the
+//! fallback.
 
 use crate::lap::Lap;
 use crate::telemetry::SessionInfo;
 
 /// Lap length may differ from `TrackLength` by this fraction (observed: 0.17%).
 const LENGTH_TOLERANCE: f64 = 0.015;
-/// Lap start may be this far from the session's start/finish position (observed: 8 m).
-const START_TOLERANCE_M: f64 = 150.0;
+/// Lap start may be this far from the session's `TrackLatitude`/`TrackLongitude` and still
+/// be at the same venue. That point is on the track but not always at start/finish, where
+/// laps start: 1-8 m away at Silverstone, Imola, Le Mans and Donington, but about 200 m at
+/// Spa and 267 m at Suzuka. Other venues are kilometres away.
+const VENUE_TOLERANCE_M: f64 = 1500.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchStatus {
@@ -169,14 +173,17 @@ fn track_match(r: &RefInfo, session: &SessionInfo) -> TrackMatch {
         (Some(a), Some(b)) if b > 0.0 => Some(((a - b) / b).abs() <= LENGTH_TOLERANCE),
         _ => None,
     };
-    let start_ok = match (r.start_latlon, session.track_latlon) {
-        (Some(a), Some(b)) => Some(haversine_m(a, b) <= START_TOLERANCE_M),
+    let venue_ok = match (r.start_latlon, session.track_latlon) {
+        (Some(a), Some(b)) => Some(haversine_m(a, b) <= VENUE_TOLERANCE_M),
         _ => None,
     };
     let by_name = r.track.map_or(TrackMatch::Unknown, |t| track_by_name(t, session));
-    match (start_ok, length_ok) {
+    match (venue_ok, length_ok) {
         (Some(true), Some(true)) => TrackMatch::Same,
         (Some(true), Some(false)) => TrackMatch::OtherLayout,
+        // Far from the session's point, but the name and the length both agree: a venue
+        // whose point is far from where laps start. The position alone doesn't rule it out.
+        (Some(false), Some(true)) if by_name == TrackMatch::Same => TrackMatch::Same,
         (Some(false), _) => TrackMatch::Different,
         // No positions: the name decides, and a length mismatch still rules it out.
         (None, Some(false)) if by_name == TrackMatch::Same => TrackMatch::OtherLayout,
@@ -252,13 +259,21 @@ mod tests {
             status(&r("Silverstone Circuit (National)", "Ferrari 296 GT3", Some(2638.0), Some(START)), Some(&s)),
             MatchStatus::DifferentLayout
         );
-        // Starts 2 km away.
+        // Starts 2 km away: another venue, unless the name and the length both say otherwise.
+        let far = (52.08, -1.0);
+        assert!(haversine_m(far, s.track_latlon.unwrap()) > VENUE_TOLERANCE_M);
+        let far = Some(far);
         assert_eq!(
-            status(
-                &r("Silverstone Circuit (Grand Prix)", "Ferrari 296 GT3", Some(5786.4), Some((52.08, -1.0))),
-                Some(&s)
-            ),
+            status(&r("Brands Hatch Circuit (Grand Prix)", "Ferrari 296 GT3", Some(5786.4), far), Some(&s)),
             MatchStatus::DifferentTrack
+        );
+        assert_eq!(
+            status(&r("Silverstone Circuit (Grand Prix)", "Ferrari 296 GT3", Some(3908.0), far), Some(&s)),
+            MatchStatus::DifferentTrack
+        );
+        assert_eq!(
+            status(&r("Silverstone Circuit (Grand Prix)", "Ferrari 296 GT3", Some(5786.4), far), Some(&s)),
+            MatchStatus::Match
         );
         assert_eq!(
             status(
@@ -267,6 +282,47 @@ mod tests {
             ),
             MatchStatus::DifferentCar
         );
+    }
+
+    /// Session and lap-start values from real .ibt files, where `TrackLatitude` /
+    /// `TrackLongitude` isn't the start/finish line.
+    #[test]
+    fn venues_whose_point_is_away_from_start_finish_match() {
+        let spa = SessionInfo {
+            track_display_name: Some("Circuit de Spa-Francorchamps".into()),
+            track_config_name: Some("Grand Prix".into()),
+            track_length_m: Some(6929.3),
+            track_latlon: Some((50.444554, 5.967743)),
+            car_name: Some("Ford Mustang GT3".into()),
+            ..Default::default()
+        };
+        let start = (50.443130, 5.966050);
+        assert!((190.0..210.0).contains(&haversine_m(start, spa.track_latlon.unwrap())));
+        let lap = r("Circuit de Spa-Francorchamps (Grand Prix Pits)", "Ford Mustang GT3", Some(6943.0), Some(start));
+        assert_eq!(status(&lap, Some(&spa)), MatchStatus::Match);
+        let other_car = r("Circuit de Spa-Francorchamps (Grand Prix Pits)", "BMW M4 GT3", Some(6943.0), Some(start));
+        assert_eq!(status(&other_car, Some(&spa)), MatchStatus::DifferentCar);
+
+        let suzuka = SessionInfo {
+            track_display_name: Some("Suzuka International Racing Course".into()),
+            track_config_name: Some("Grand Prix".into()),
+            track_length_m: Some(5753.6),
+            track_latlon: Some((34.843284, 136.540491)),
+            car_name: Some("Ferrari 296 GT3".into()),
+            ..Default::default()
+        };
+        let start = (34.845166, 136.538667);
+        assert!((260.0..275.0).contains(&haversine_m(start, suzuka.track_latlon.unwrap())));
+        let gp = r("Suzuka International Racing Course (Grand Prix)", "Ferrari 296 GT3", Some(5754.8), Some(start));
+        assert_eq!(status(&gp, Some(&suzuka)), MatchStatus::Match);
+        // The same venue's East course starts on the same line: the length tells them apart.
+        let east = r("Suzuka International Racing Course (East)", "Ferrari 296 GT3", Some(2243.0), Some(start));
+        assert_eq!(status(&east, Some(&suzuka)), MatchStatus::DifferentLayout);
+
+        // Another venue is still another track.
+        let silverstone = r("Silverstone Circuit (Grand Prix)", "Ferrari 296 GT3", Some(5786.4), Some(START));
+        assert_eq!(status(&silverstone, Some(&spa)), MatchStatus::DifferentTrack);
+        assert_eq!(status(&silverstone, Some(&suzuka)), MatchStatus::DifferentTrack);
     }
 
     #[test]

@@ -330,6 +330,10 @@ mod live {
             if event.is_none() {
                 event = DataValidEvent::open();
             }
+            // Accepted risk, pinned with kerb `=0.4.0`: kerb reads the mapping at the offsets
+            // and lengths its header gives without checking them against the mapped size, so
+            // a process publishing a malformed `IRSDKMemMapFileName` could crash the overlay.
+            // The sim's own layout is consistent; fixing it needs a kerb fork.
             let result = match &event {
                 Some(ev) => {
                     ev.wait(READ_TIMEOUT_MS);
@@ -493,6 +497,7 @@ mod live {
             if self.version.replace(version) == Some(version) {
                 return;
             }
+            // Unchecked header offsets in kerb `=0.4.0`: see the accepted risk in `read_connection`.
             if let Some(info) = conn.session_yaml().map(|yaml| parse_session_yaml(&yaml))
                 && self.sent.as_ref() != Some(&info)
             {
@@ -510,13 +515,19 @@ mod live {
     /// The reader thread's end of the queue. Never blocks: when the app falls behind,
     /// frames are dropped, while status events wait in a backlog so the app still learns
     /// about every connect, disconnect and session change, in order.
+    ///
+    /// Only frames with the player driving are queued, plus the first one after they stop
+    /// so the app sees the car leave: the rest change nothing on screen, and waking the app
+    /// for them would repaint it at 60 Hz in the garage, the pit stall or a replay.
     pub(super) struct Outbox {
         tx: SyncSender<TelemetryEvent>,
         shared: Arc<Shared>,
         wake: Box<dyn Fn() + Send + Sync>,
         backlog: VecDeque<TelemetryEvent>,
-        /// Frames queued, for the wake divisor.
+        /// Driving frames queued, for the wake divisor.
         frames: u32,
+        /// The last frame queued was a driving one.
+        driving: bool,
         /// Something the app should be woken for was queued since the last wake.
         wake_pending: bool,
     }
@@ -527,7 +538,7 @@ mod live {
             shared: Arc<Shared>,
             wake: Box<dyn Fn() + Send + Sync>,
         ) -> Self {
-            Self { tx, shared, wake, backlog: VecDeque::new(), frames: 0, wake_pending: false }
+            Self { tx, shared, wake, backlog: VecDeque::new(), frames: 0, driving: false, wake_pending: false }
         }
 
         fn stopped(&self) -> bool {
@@ -536,13 +547,31 @@ mod live {
 
         /// Queues an event; [`Self::wake_app`] then wakes the app for it.
         fn send(&mut self, event: TelemetryEvent) {
-            if !matches!(event, TelemetryEvent::Frame(_)) {
-                self.backlog.push_back(event);
-                self.flush();
-            } else if self.flush() && self.tx.try_send(event).is_ok() {
-                self.frames = self.frames.wrapping_add(1);
-                let divisor = self.shared.wake_divisor.load(Ordering::Relaxed).max(1);
-                self.wake_pending |= self.frames.is_multiple_of(divisor);
+            match event {
+                TelemetryEvent::Frame(frame) => self.send_frame(frame),
+                status => {
+                    self.backlog.push_back(status);
+                    self.flush();
+                }
+            }
+        }
+
+        /// Queues a driving frame (waking the app on every `n`th), or the first frame after
+        /// the player stopped driving (waking it once); drops the others.
+        fn send_frame(&mut self, frame: TelemetryFrame) {
+            // Status events waiting for room go first, whatever the frame.
+            if !self.flush() || (!frame.on_track && !self.driving) {
+                return;
+            }
+            if self.tx.try_send(TelemetryEvent::Frame(frame)).is_ok() {
+                self.driving = frame.on_track;
+                if frame.on_track {
+                    self.frames = self.frames.wrapping_add(1);
+                    let divisor = self.shared.wake_divisor.load(Ordering::Relaxed).max(1);
+                    self.wake_pending |= self.frames.is_multiple_of(divisor);
+                } else {
+                    self.wake_pending = true;
+                }
             }
         }
 
@@ -598,6 +627,17 @@ mod live {
             })
         }
 
+        /// A frame in the pit stall (the automatic hold reads as full brake).
+        fn parked() -> TelemetryEvent {
+            TelemetryEvent::Frame(TelemetryFrame {
+                session_time: 1.0,
+                lap_dist_pct: 0.02,
+                throttle: 0.0,
+                brake: 1.0,
+                on_track: false,
+            })
+        }
+
         fn outbox(capacity: usize, divisor: u32) -> (Outbox, Receiver<TelemetryEvent>, Arc<AtomicUsize>) {
             let (tx, rx) = sync_channel(capacity);
             let shared = Arc::new(Shared { stop: AtomicBool::new(false), wake_divisor: AtomicU32::new(divisor) });
@@ -628,6 +668,36 @@ mod live {
             out.wake_app();
             assert_eq!(wakes(), 5);
             assert_eq!(rx.try_iter().count(), 12);
+        }
+
+        #[test]
+        fn frames_off_track_wake_the_app_once_when_the_player_stops_driving() {
+            let (mut out, rx, wakes) = outbox(64, 1);
+            let wakes = move || wakes.load(Ordering::Relaxed);
+            let mut step = |event: TelemetryEvent| {
+                out.send(event);
+                out.wake_app();
+            };
+            step(TelemetryEvent::Connected);
+            for _ in 0..120 {
+                step(parked()); // in the garage from the start: nothing to show
+            }
+            assert_eq!(wakes(), 1, "only for Connected");
+            for _ in 0..3 {
+                step(frame(0.0));
+            }
+            for _ in 0..600 {
+                step(parked()); // into the pit stall
+            }
+            assert_eq!(wakes(), 1 + 3 + 1, "each driving frame, then once for leaving");
+            step(TelemetryEvent::Session(SessionInfo::default()));
+            step(frame(0.2)); // back out
+            step(parked());
+            step(parked());
+            assert_eq!(wakes(), 5 + 1 + 1 + 1);
+            let queued: Vec<_> = rx.try_iter().collect();
+            assert_eq!(queued.len(), 1 + 3 + 1 + 1 + 1 + 1, "no frame after the first off-track one");
+            assert_eq!(&queued[4..], [parked(), TelemetryEvent::Session(SessionInfo::default()), frame(0.2), parked()]);
         }
 
         #[test]
