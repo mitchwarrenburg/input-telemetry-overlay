@@ -11,7 +11,7 @@
     muted: "#7f8b89",
     grid: "rgba(255, 255, 255, 0.07)",
     baseline: "rgba(255, 255, 255, 0.16)",
-    brakePill: "#e0301f", // a step darker than the line so white text clears 4.5:1
+    brakePill: "rgba(224, 48, 31, 0.82)", // your peak pill: a step darker than the line, slightly see-through
     peakLine: "rgba(232, 239, 238, 0.5)", // reference peak: dotted line and its label's border
   };
   // Reference peak labels sit on a rail across the top of the plot, this far above it.
@@ -390,7 +390,7 @@
         if (!b) continue;
         ctx.beginPath();
         ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, 3);
-        ctx.fillStyle = `rgba(${INK.surface}, 0.92)`;
+        ctx.fillStyle = `rgba(${INK.surface}, 0.72)`; // slightly see-through
         ctx.fill();
         ctx.strokeStyle = INK.peakLine;
         ctx.lineWidth = 1;
