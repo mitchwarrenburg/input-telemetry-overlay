@@ -106,7 +106,11 @@ pub struct OverlayApp {
     reference: Reference,
     /// The bundled lap the demo drives.
     sample: Arc<Lap>,
+    /// The session the graph and reference follow: iRacing's while live, the demo's
+    /// while the demo runs.
     session: Option<SessionInfo>,
+    /// Last session info from iRacing, which can arrive before `Connected`.
+    sim_session: Option<SessionInfo>,
     feed: LiveFeed,
     reader: Option<IracingReader>,
     live: bool,
@@ -149,6 +153,7 @@ impl OverlayApp {
             reference: Reference::default(),
             sample: Arc::new(demo::sample_lap()),
             session: None,
+            sim_session: None,
             feed: LiveFeed::default(),
             reader,
             live: false,
@@ -209,17 +214,21 @@ impl OverlayApp {
                 log::info!("Connected to iRacing");
                 self.live = true;
                 self.demo = None;
-                self.session = None;
+                self.session = self.sim_session.clone();
                 self.feed.clear();
                 self.on_session_changed();
             }
             TelemetryEvent::Disconnected => {
                 log::info!("iRacing disconnected");
+                self.sim_session = None;
                 self.enter_idle(now);
             }
-            TelemetryEvent::Session(info) if self.live && self.session.as_ref() != Some(&info) => {
-                self.session = Some(info);
-                self.on_session_changed();
+            TelemetryEvent::Session(info) if self.sim_session.as_ref() != Some(&info) => {
+                self.sim_session = Some(info);
+                if self.live {
+                    self.session = self.sim_session.clone();
+                    self.on_session_changed();
+                }
             }
             TelemetryEvent::Frame(frame) if self.live => self.feed.push(&frame),
             TelemetryEvent::Session(_) | TelemetryEvent::Frame(_) => {}
