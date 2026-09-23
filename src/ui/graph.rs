@@ -11,7 +11,7 @@ use crate::lap::Lap;
 use crate::settings::{Axis, LabelMode};
 use crate::trace::{LiveSample, LiveTrace};
 use crate::ui::graph_layout::{
-    self as layout, Connector, LabelPlacer, LabelSpot, Peak, PlotLayout, Scale, XBand, laps_in_view,
+    self as layout, Connector, Decimator, LabelPlacer, LabelSpot, Peak, PlotLayout, Scale, XBand, laps_in_view,
 };
 use crate::ui::theme::{self, Weight};
 
@@ -115,15 +115,15 @@ fn paint_grid(painter: &Painter, plot: Rect) {
     }
 }
 
-/// The two-line message, centred in the look-ahead region when that's wide enough
-/// (`cursor_x` is the car when there's a look-ahead), else across the plot.
+/// The two-line message, centred in the look-ahead region when it fits there (`cursor_x`
+/// is the car when there's a look-ahead), else across the plot.
 fn paint_message(painter: &Painter, plot: Rect, cursor_x: Option<f32>, (title, detail): (&str, &str)) {
-    let left = cursor_x.filter(|&x| plot.right() - x >= 150.0).unwrap_or(plot.left());
-    let mid = (left + plot.right()) / 2.0;
+    let title = painter.layout_no_wrap(title.to_uppercase(), theme::font(Weight::Bold, 11.0), theme::HUD_TEXT);
+    let detail = painter.layout_no_wrap(detail.to_string(), theme::font(Weight::Regular, 10.5), theme::HUD_MUTED);
+    let mid = layout::message_center_x(plot, cursor_x, title.size().x.max(detail.size().x));
     let cy = plot.center().y;
-    let (title_font, detail_font) = (theme::font(Weight::Bold, 11.0), theme::font(Weight::Regular, 10.5));
-    paint_text(painter, pos2(mid, cy - 7.0), Align2::CENTER_CENTER, title.to_uppercase(), title_font, theme::HUD_TEXT);
-    paint_text(painter, pos2(mid, cy + 8.0), Align2::CENTER_CENTER, detail, detail_font, theme::HUD_MUTED);
+    paint_galley(painter, pos2(mid, cy - 7.0), Align2::CENTER_CENTER, title, theme::HUD_TEXT);
+    paint_galley(painter, pos2(mid, cy + 8.0), Align2::CENTER_CENTER, detail, theme::HUD_MUTED);
 }
 
 /// A current-value or peak dot on a surface-coloured ring; `hollow` for reference peaks.
@@ -245,19 +245,21 @@ impl<'a> View<'a> {
         painter.extend(edges);
     }
 
-    /// Live throttle and brake points from the window's left edge up to the car.
+    /// Live throttle and brake points from the window's left edge up to the car, thinned to
+    /// one physical pixel per column: a slow or stopped car puts many samples on one x.
     fn live_lines(&self, lo: f64) -> (Vec<Pos2>, Vec<Pos2>) {
         let live = self.scene.live;
         let by_time = self.by_time();
         let start = live.first_at_or_after(self.key + lo, by_time).saturating_sub(1);
         let key = |s: &LiveSample| if by_time { s.t } else { s.d };
-        live.samples()
-            .range(start..)
-            .map(|s| {
-                let x = self.scale.x(key(s) - self.key);
-                (pos2(x, self.scale.y(pedal(s.throttle))), pos2(x, self.scale.y(pedal(s.brake))))
-            })
-            .unzip()
+        let column = 1.0 / self.painter.pixels_per_point();
+        let (mut throttle, mut brake) = (Decimator::new(column), Decimator::new(column));
+        for s in live.samples().range(start..) {
+            let x = self.scale.x(key(s) - self.key);
+            throttle.push(pos2(x, self.scale.y(pedal(s.throttle))));
+            brake.push(pos2(x, self.scale.y(pedal(s.brake))));
+        }
+        (throttle.finish(), brake.finish())
     }
 
     /// Cursor, playhead and current-value dots. Returns the dots' boxes.
@@ -593,6 +595,123 @@ mod tests {
         assert!(View::new(&painter, panel, plot, &s).is_none());
         s.axis = Axis::Time;
         assert!(View::new(&painter, panel, plot, &s).is_some());
+    }
+
+    /// 70 s of driving the sample lap, then 10 minutes stopped with both pedals going
+    /// through their whole travel, fed like `LiveFeed::push`.
+    fn stopped_with_pedals_moving() -> (LiveTrace, CarNow) {
+        let mut live = LiveTrace::new();
+        let mut driver = crate::demo::SimulatedDriver::new(std::sync::Arc::new(sample_lap()), 3);
+        let mut tracker = crate::trace::DistanceTracker::new();
+        let mut now = car(0.0);
+        for i in 0..(670 * 60) {
+            let mut f = driver.step(1.0 / 60.0);
+            if i >= 70 * 60 {
+                f.lap_dist_pct = now.lap_pos.rem_euclid(1.0);
+                (f.throttle, f.brake) = ((i % 11) as f32 / 10.0, (i % 60) as f32 / 59.0);
+            }
+            let crate::trace::Progress::Continuous(lap_pos) = tracker.update(f.session_time, f.lap_dist_pct) else {
+                continue;
+            };
+            let d = lap_pos * L;
+            live.push(LiveSample { t: f.session_time, d, brake: f.brake, throttle: f.throttle });
+            live.prune(f.session_time - 25.0, d - 1600.0);
+            now = CarNow { t: f.session_time, lap_pos, throttle: f.throttle, brake: f.brake };
+        }
+        (live, now)
+    }
+
+    #[test]
+    fn a_stopped_car_draws_a_line_no_wider_than_the_plot() {
+        let (live, now) = stopped_with_pedals_moving();
+        assert_eq!(live.len(), crate::trace::MAX_SAMPLES);
+        let painter =
+            Painter::new(eframe::egui::Context::default(), eframe::egui::LayerId::background(), Rect::EVERYTHING);
+        let panel = Rect::from_min_size(Pos2::ZERO, vec2(680.0, 170.0));
+        let plot = PlotLayout::new(panel, 26.0).unwrap().plot;
+        for axis in [Axis::Distance, Axis::Time] {
+            let s = scene(axis, &live, None, now);
+            let view = View::new(&painter, panel, plot, &s).unwrap();
+            let (throttle, brake) = view.live_lines(-view.scale.behind() * 1.02);
+            for line in [&throttle, &brake] {
+                assert!(line.len() <= 4 * (plot.width() as usize + 1), "{axis:?}: {}", line.len());
+            }
+            // The stop's full pedal travel is still drawn.
+            for line in [&throttle, &brake] {
+                let has = |pedal: f32| line.iter().any(|p| p.y == view.scale.y(pedal));
+                assert!(has(0.0) && has(1.0), "{axis:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_stopped_car_tessellates_like_a_moving_one() {
+        let (live, now) = stopped_with_pedals_moving();
+        let lap = sample_lap();
+        let ctx = eframe::egui::Context::default();
+        theme::install_fonts(&ctx);
+        let panel = Rect::from_min_size(Pos2::ZERO, vec2(680.0, 170.0));
+        let s = scene(Axis::Distance, &live, Some(&lap), now);
+        let mut out = ctx.run_ui(Default::default(), |ui| paint(ui.painter(), panel, &s));
+        for _ in 0..2 {
+            out.textures_delta.clear();
+            out = ctx.run_ui(Default::default(), |ui| paint(ui.painter(), panel, &s));
+        }
+        let vertices: usize = ctx
+            .tessellate(out.shapes, out.pixels_per_point)
+            .iter()
+            .map(|p| match &p.primitive {
+                eframe::egui::epaint::Primitive::Mesh(m) => m.vertices.len(),
+                eframe::egui::epaint::Primitive::Callback(_) => 0,
+            })
+            .sum();
+        // About 37k while driving; 1.8M before the stop was thinned.
+        assert!(vertices < 60_000, "{vertices}");
+    }
+
+    /// The text rects of `message` painted on a `size` panel with the car mid-lap, and the
+    /// plot and cursor.
+    fn painted_message(size: Vec2, message: (&str, &str)) -> (Rect, f32, Vec<Rect>) {
+        let ctx = eframe::egui::Context::default();
+        theme::install_fonts(&ctx);
+        let live = LiveTrace::new();
+        let s = GraphScene { message: Some(message), ..scene(Axis::Distance, &live, None, car(0.5)) };
+        let panel = Rect::from_min_size(pos2(4.0, 4.0), size);
+        let mut shapes = Vec::new();
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(Default::default(), |ui| paint(ui.painter(), panel, &s));
+            out.textures_delta.clear();
+            shapes = out.shapes;
+        }
+        let rects = shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                Shape::Text(t) if [message.0, message.1].contains(&t.galley.text()) => {
+                    Some(c.shape.visual_bounding_rect())
+                }
+                _ => None,
+            })
+            .collect();
+        let plot = PlotLayout::new(panel, s.header_height).unwrap().plot;
+        (plot, Scale::new(plot, s.behind, s.ahead).unwrap().x(0.0), rects)
+    }
+
+    #[test]
+    fn empty_state_message_fits_the_plot() {
+        let message = ("NO REFERENCE LAP", "Drop a Garage 61 CSV here, or load one in ⚙ settings");
+        // Compact: the 172 pt look-ahead is too narrow, so the text centres across the plot.
+        let (plot, _, rects) = painted_message(vec2(380.0, 170.0), message);
+        assert_eq!(rects.len(), 2);
+        for r in &rects {
+            assert!(plot.contains_rect(*r), "{r:?} leaves {plot:?}");
+            assert!((r.center().x - plot.center().x).abs() < 2.0, "{r:?}");
+        }
+        // Wide: in the look-ahead, clear of the cursor.
+        let (plot, cursor, rects) = painted_message(vec2(680.0, 170.0), message);
+        assert_eq!(rects.len(), 2);
+        for r in &rects {
+            assert!(plot.contains_rect(*r) && r.left() > cursor + 10.0, "{r:?}, cursor at {cursor}");
+        }
     }
 
     #[test]

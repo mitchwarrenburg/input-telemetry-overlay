@@ -200,6 +200,29 @@ mod tests {
     }
 
     #[test]
+    fn a_car_stopped_on_track_keeps_the_trace_bounded() {
+        let mut feed = LiveFeed::default();
+        let (mut t, mut pct) = (0.0, 0.1);
+        for _ in 0..600 {
+            feed.push(&frame(t, pct, 0.0)); // 10 s at 30 m/s
+            t += 1.0 / 60.0;
+            pct += 0.5 / FALLBACK_TRACK_LENGTH_M;
+        }
+        let driven = feed.trace().len();
+        for _ in 0..10 * 60 * 60 {
+            feed.push(&frame(t, pct, 0.4)); // 10 minutes on the grid, foot on the brake
+            t += 1.0 / 60.0;
+        }
+        assert_eq!(feed.trace().len(), driven + 2, "the stop's first and latest frame");
+        assert!((feed.trace().last().unwrap().t - (t - 1.0 / 60.0)).abs() < 1e-9);
+        for i in 0..10 * 60 * 60 {
+            feed.push(&frame(t, pct, (i % 5) as f32 / 10.0)); // 10 more, pumping the brake
+            t += 1.0 / 60.0;
+        }
+        assert_eq!(feed.trace().len(), crate::trace::MAX_SAMPLES);
+    }
+
+    #[test]
     fn demo_prerolls_and_follows_the_clock() {
         let lap = Arc::new(sample_lap());
         let mut feed = LiveFeed::default();

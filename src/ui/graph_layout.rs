@@ -22,6 +22,8 @@ pub const LABEL_HEIGHT: f32 = 16.0;
 pub const PILL_HEIGHT: f32 = 14.0;
 /// X-band tick label height.
 pub const TICK_HEIGHT: f32 = 12.0;
+/// Room kept between the empty-state message and the car cursor or the plot's edge.
+const MESSAGE_PAD: f32 = 12.0;
 
 /// The plot inside the panel.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -94,6 +96,82 @@ pub fn fit(v: f32, lo: f32, hi: f32) -> f32 {
 /// Whether `a` and `b` come closer than `margin` (boxes exactly `margin` apart don't).
 pub fn overlaps(a: Rect, b: Rect, margin: f32) -> bool {
     a.min.x < b.max.x + margin && b.min.x < a.max.x + margin && a.min.y < b.max.y + margin && b.min.y < a.max.y + margin
+}
+
+/// Thins a polyline to screen resolution, for lines with more points than pixels (a slow
+/// or stopped car). Points less than `column` to either side of the first point of their
+/// run share a column, of which only the first, highest, lowest and last are kept, in
+/// order. The line looks the same, with at most four points per column however many it
+/// was given.
+#[derive(Debug, Clone)]
+pub struct Decimator {
+    column: f32,
+    out: Vec<Pos2>,
+    run: Option<Column>,
+}
+
+/// The points of one column that are kept, with their order in it.
+#[derive(Debug, Clone, Copy)]
+struct Column {
+    first: Pos2,
+    top: (usize, Pos2),
+    bottom: (usize, Pos2),
+    last: (usize, Pos2),
+    len: usize,
+}
+
+impl Decimator {
+    /// `column`: the width (points) that counts as one pixel column.
+    pub fn new(column: f32) -> Self {
+        Self { column, out: Vec::new(), run: None }
+    }
+
+    pub fn push(&mut self, p: Pos2) {
+        match &mut self.run {
+            Some(c) if (p.x - c.first.x).abs() < self.column => {
+                if p.y < c.top.1.y {
+                    c.top = (c.len, p);
+                }
+                if p.y > c.bottom.1.y {
+                    c.bottom = (c.len, p);
+                }
+                c.last = (c.len, p);
+                c.len += 1;
+            }
+            _ => {
+                self.flush();
+                self.run = Some(Column { first: p, top: (0, p), bottom: (0, p), last: (0, p), len: 1 });
+            }
+        }
+    }
+
+    /// The thinned line.
+    pub fn finish(mut self) -> Vec<Pos2> {
+        self.flush();
+        self.out
+    }
+
+    /// Emits the current column; repeated points are dropped (the tessellator needs distinct ones).
+    fn flush(&mut self) {
+        let Some(c) = self.run.take() else { return };
+        let mut kept = [(0, c.first), c.top, c.bottom, c.last];
+        kept.sort_by_key(|&(i, _)| i);
+        for (_, p) in kept {
+            if self.out.last() != Some(&p) {
+                self.out.push(p);
+            }
+        }
+    }
+}
+
+/// Where the two-line empty-state message is centred: in the look-ahead right of the car
+/// (`cursor_x`) when text `text_width` wide fits there with room to spare, else across the
+/// plot. Always inside the plot (from its left edge when the text is wider).
+pub fn message_center_x(plot: Rect, cursor_x: Option<f32>, text_width: f32) -> f32 {
+    let fits_ahead = |x: &f32| plot.right() - x >= text_width + 2.0 * MESSAGE_PAD;
+    let left = cursor_x.filter(fits_ahead).unwrap_or(plot.left());
+    let half = text_width / 2.0;
+    fit((left + plot.right()) / 2.0, plot.left() + half, plot.right() - half)
 }
 
 /// Laps `k` whose copy `[k·period, (k+1)·period)` overlaps `[lo, hi]` (absolute axis
@@ -657,6 +735,73 @@ mod tests {
                 assert!(placed[i + 1..].iter().all(|b| !overlaps(*a, *b, 2.0)));
             }
         }
+    }
+
+    fn decimate(points: impl IntoIterator<Item = Pos2>) -> Vec<Pos2> {
+        let mut d = Decimator::new(1.0);
+        points.into_iter().for_each(|p| d.push(p));
+        d.finish()
+    }
+
+    #[test]
+    fn decimation_leaves_a_sparse_line_alone() {
+        let line: Vec<Pos2> = (0..50).map(|i| pos2(10.0 + i as f32 * 1.5, 50.0 + (i % 5) as f32)).collect();
+        assert_eq!(decimate(line.clone()), line);
+    }
+
+    #[test]
+    fn decimation_keeps_peaks_and_order() {
+        // 200 points in one column, a one-sample spike up and one down, then a second column.
+        let mut line: Vec<Pos2> = (0..200).map(|i| pos2(100.0 + i as f32 * 0.004, 80.0)).collect();
+        line[70].y = 10.0;
+        line[140].y = 95.0;
+        line.push(pos2(101.5, 60.0));
+        assert_eq!(
+            decimate(line.clone()),
+            [pos2(100.0, 80.0), line[70], line[140], line[199], pos2(101.5, 60.0)],
+            "first, highest, lowest, last, in order"
+        );
+        // Stationary jitter across a column boundary stays one column.
+        let jitter = (0..1000).map(|i| pos2(361.0 + if i % 2 == 0 { 1e-4 } else { -1e-4 }, (i % 17) as f32));
+        assert!(decimate(jitter).len() <= 4);
+    }
+
+    #[test]
+    fn decimated_line_is_bounded_by_the_width() {
+        // 36,000 samples over 300 points of width: at most four per column.
+        let dense = (0..36_000).map(|i| pos2(i as f32 / 120.0, if i % 3 == 0 { 0.0 } else { 100.0 }));
+        let thin = decimate(dense);
+        assert!(thin.len() <= 4 * 301, "{}", thin.len());
+        assert!(thin.iter().any(|p| p.y == 0.0) && thin.iter().any(|p| p.y == 100.0));
+        assert!(thin.windows(2).all(|w| w[0] != w[1]), "no repeated points");
+        assert!(decimate([]).is_empty());
+    }
+
+    #[test]
+    fn message_uses_the_look_ahead_only_when_it_fits() {
+        // "Drop a Garage 61 CSV here, or load one in ⚙ settings" is 210.7 pt wide.
+        let w = 210.7;
+        let wide = layout(680.0, 170.0).plot;
+        let cursor = metres(680.0, 170.0).x(0.0);
+        let mid = message_center_x(wide, Some(cursor), w);
+        assert_eq!(mid, (cursor + wide.right()) / 2.0);
+        assert!(mid - w / 2.0 > cursor + MESSAGE_PAD - 0.01);
+
+        // 380x170: a 172 pt look-ahead is too narrow, so the text centres across the plot.
+        let compact = layout(380.0, 170.0).plot;
+        let cursor = metres(380.0, 170.0).x(0.0);
+        assert_eq!(compact.right() - cursor, 172.0);
+        assert_eq!(message_center_x(compact, Some(cursor), w), compact.center().x);
+        assert_eq!(message_center_x(compact, None, w), compact.center().x);
+
+        // Always inside the plot; text wider than the plot starts at its left edge.
+        for plot in [wide, compact] {
+            for cursor in [None, Some(plot.left()), Some(plot.center().x), Some(plot.right() - 1.0)] {
+                let mid = message_center_x(plot, cursor, w);
+                assert!(mid - w / 2.0 >= plot.left() - 0.01 && mid + w / 2.0 <= plot.right() + 0.01);
+            }
+        }
+        assert_eq!(message_center_x(compact, None, 400.0), compact.left() + 200.0);
     }
 
     #[test]
