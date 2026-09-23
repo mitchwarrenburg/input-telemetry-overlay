@@ -4,14 +4,14 @@
 (function (root) {
   const ITO = (root.ITO = root.ITO || {});
 
-  const RGB = { throttle: "34, 224, 122", brake: "255, 61, 46" };
+  const RGB = { throttle: "34, 224, 122", brake: "255, 61, 46", you: "127, 209, 255", target: "245, 200, 80" };
   const INK = {
     surface: "7, 9, 10",
     text: "#e8efee",
     muted: "#7f8b89",
     grid: "rgba(255, 255, 255, 0.07)",
     baseline: "rgba(255, 255, 255, 0.16)",
-    peakLine: "rgba(232, 239, 238, 0.5)", // reference peak: dotted line and its label's border
+    peakLine: "rgba(245, 200, 80, 0.55)", // reference peak (the target): dotted line and its label's border
   };
   // Reference peak labels sit in their own row between the header and the plot, so they
   // never cover a trace at 100%. The plot moves down by RAIL_ROOM to make space for it.
@@ -381,7 +381,7 @@
     // The peak dots, then each label at the top of its line. Returns the label boxes.
     drawRail(peaks) {
       const { ctx } = this;
-      for (const p of peaks) this.dot(p.x, p.y, RGB.brake, true);
+      for (const p of peaks) this.dot(p.x, p.y, RGB.target, true);
       ctx.font = `600 10px ${FONT}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
@@ -393,17 +393,17 @@
         ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, 3);
         ctx.fillStyle = `rgba(${INK.surface}, 0.72)`; // slightly see-through
         ctx.fill();
-        ctx.strokeStyle = INK.peakLine;
+        ctx.strokeStyle = `rgba(${RGB.target}, 0.8)`;
         ctx.lineWidth = 1;
         ctx.stroke();
-        ctx.fillStyle = INK.text;
+        ctx.fillStyle = `rgb(${RGB.target})`;
         ctx.fillText(p.text, b.x + b.w / 2, b.y + b.h / 2 + 0.5);
         boxes.push(b);
       }
       return boxes;
     }
 
-    // Your peaks: a white number, no background, over a white pointer that touches the apex
+    // Your peaks: a light blue number, no background, over a light blue pointer that touches the apex
     // of your brake line. Both have a dark outline so they read over the traces and fills.
     // It sits above the apex, or below when above would run into a reference label, the
     // header or another pin. Below, it reaches right from the apex: a peak is usually where the brake
@@ -436,7 +436,7 @@
       ctx.textBaseline = "middle";
       ctx.lineJoin = "round";
       ctx.strokeStyle = `rgba(${INK.surface}, 0.92)`;
-      ctx.fillStyle = "#fff";
+      ctx.fillStyle = `rgb(${RGB.you})`;
       for (const { box, text, ax, ay } of drawn) {
         // The pointer's tip sits on the top (or bottom) edge of the line at the apex.
         const edge = box.up ? box.y + 1 : box.y + box.h - 1;
