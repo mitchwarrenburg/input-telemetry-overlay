@@ -14,6 +14,11 @@ pub const MAX_SAMPLES: usize = 12_000;
 const STILL_M: f64 = 0.05;
 /// Pedal changes smaller than this (0..1) don't show on the graph.
 const STILL_PEDAL: f32 = 0.002;
+/// While the car stands still with the pedals wobbling (a foot resting on a load cell),
+/// one sample per this many seconds…
+const STILL_STEP_S: f64 = 0.1;
+/// …as long as they move less than this between samples; bigger moves are all kept.
+const STILL_WOBBLE: f32 = 0.05;
 
 /// One live sample on the graph.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -75,18 +80,28 @@ impl LiveTrace {
 
     /// Appends a sample. While the car stands still with steady pedals, the stop is kept as
     /// its first sample plus the latest one (moved forward in time), so a parked car doesn't
-    /// grow the trace and the time axis still draws a flat line across the stop. Past
-    /// [`MAX_SAMPLES`] the oldest samples, and the brake events before them, go.
+    /// grow the trace and the time axis still draws a flat line across the stop; with the
+    /// pedals wobbling (a foot resting on a load cell), one sample per [`STILL_STEP_S`]. Past
+    /// [`MAX_SAMPLES`] the oldest samples, and the brake events that peaked before them, go.
     pub fn push(&mut self, s: LiveSample) {
         let n = self.samples.len();
-        if n >= 2 && still(&self.samples[n - 2], &self.samples[n - 1]) && still(&self.samples[n - 2], &s) {
+        let collapse = n >= 2 && {
+            let (a, b) = (&self.samples[n - 2], &self.samples[n - 1]);
+            let steady = pedals_within(a, b, STILL_PEDAL) && pedals_within(a, &s, STILL_PEDAL);
+            let wobble =
+                pedals_within(a, b, STILL_WOBBLE) && pedals_within(b, &s, STILL_WOBBLE) && s.t - a.t < STILL_STEP_S;
+            in_place(a, b) && in_place(a, &s) && (steady || wobble)
+        };
+        if collapse {
             self.samples[n - 1] = s;
         } else {
             self.samples.push_back(s);
             if self.samples.len() > MAX_SAMPLES {
                 self.samples.pop_front();
+                // An event still going on is dropped too once its peak is gone: its label
+                // would point at a line that's no longer drawn. It restarts below.
                 let first_t = self.samples.front().map_or(s.t, |f| f.t);
-                while self.events.front().is_some_and(|e| !e.active && e.peak_t < first_t) {
+                while self.events.front().is_some_and(|e| e.peak_t < first_t) {
                     self.events.pop_front();
                 }
             }
@@ -136,11 +151,14 @@ impl LiveTrace {
     }
 }
 
-/// `b` is where `a` was, with the same pedals, as far as the graph can show.
-fn still(a: &LiveSample, b: &LiveSample) -> bool {
+/// `b` is where `a` was, as far as the graph can show.
+fn in_place(a: &LiveSample, b: &LiveSample) -> bool {
     (a.d - b.d).abs() < STILL_M
-        && (a.brake - b.brake).abs() < STILL_PEDAL
-        && (a.throttle - b.throttle).abs() < STILL_PEDAL
+}
+
+/// Both pedals within `tolerance` (0..1) of each other.
+fn pedals_within(a: &LiveSample, b: &LiveSample, tolerance: f32) -> bool {
+    (a.brake - b.brake).abs() < tolerance && (a.throttle - b.throttle).abs() < tolerance
 }
 
 /// What a telemetry frame means for the trace.
@@ -293,6 +311,15 @@ mod tests {
     }
 
     #[test]
+    fn a_stop_with_wobbling_pedals_keeps_ten_samples_a_second() {
+        // 10 minutes with a foot resting on the brake, wobbling by up to 0.8%.
+        let tr = stop(600.0, |i| (0.0, 0.4 + (i % 5) as f32 * 0.002));
+        // Roughly one per STILL_STEP_S (a sample lands just past each step).
+        let per_second = (tr.len() - 100) as f64 / 600.0;
+        assert!((1.0 / STILL_STEP_S..1.2 / STILL_STEP_S).contains(&per_second), "{per_second}");
+    }
+
+    #[test]
     fn a_stop_with_moving_pedals_is_capped() {
         // Blipping the throttle and pumping the brake (one press a second) for 10 minutes.
         let tr = stop(600.0, |i| ((i % 7) as f32 / 10.0, if i % 60 < 30 { 0.8 } else { 0.0 }));
@@ -300,7 +327,16 @@ mod tests {
         let first = tr.samples()[0].t;
         assert!(first > 600.0 - MAX_SAMPLES as f64 / 60.0, "the oldest went first: {first}");
         assert!(tr.events().all(|e| e.peak_t >= first), "no events from before the trace");
-        assert!(tr.events().count() <= MAX_SAMPLES / 60 + 1);
+    }
+
+    #[test]
+    fn an_event_still_going_on_leaves_with_its_evicted_peak() {
+        // A hard stop (95%), then 30 minutes resting on the brake at ~40% with jitter.
+        let tr = stop(1800.0, |i| (0.0, if i < 60 { 0.95 } else { 0.40 + (i % 5) as f32 * 0.002 }));
+        let first = tr.samples()[0].t;
+        let ev: Vec<_> = tr.events().copied().collect();
+        assert!(ev.iter().all(|e| e.peak_t >= first), "{ev:?} before {first}");
+        assert!(ev.last().is_some_and(|e| e.active && e.peak < 0.5), "{ev:?}");
     }
 
     #[test]

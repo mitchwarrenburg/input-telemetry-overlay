@@ -80,6 +80,10 @@ pub struct Library {
     pub laps: Vec<LibraryEntry>,
     /// The lap shown as the reference; `None` shows none.
     pub active: Option<String>,
+    /// The index on disk couldn't be read or backed up, so saving would lose it:
+    /// [`Library::save`] refuses until the app restarts.
+    #[serde(skip)]
+    pub read_only: bool,
 }
 
 #[derive(Debug)]
@@ -186,9 +190,15 @@ impl Library {
                 Err(e) => (Library::default(), format!("The lap library couldn't be read ({e}), so it starts empty.")),
             },
         };
+        let mut library = library;
         let warning = match library.quarantine(path) {
             Ok(backup) => format!("{what} The original file is kept as {backup}."),
-            Err(e) => format!("{what} Backing it up failed ({e}), so the next change to the library replaces it."),
+            Err(e) => {
+                library.read_only = true;
+                format!(
+                    "{what} It couldn't be backed up either ({e}), so changes to the library won't be saved until the overlay restarts."
+                )
+            }
         };
         log::warn!("{}: {warning}", path.display());
         (library, Some(warning))
@@ -236,6 +246,9 @@ impl Library {
     }
 
     pub fn save(&self, path: &Path) -> io::Result<()> {
+        if self.read_only {
+            return Err(io::Error::other("the library file couldn't be read at startup, so it isn't overwritten"));
+        }
         write_atomic(path, serde_json::to_string_pretty(self).map_err(io::Error::other)?.as_bytes())
     }
 
@@ -341,15 +354,24 @@ impl Library {
 
     /// The saved lap that best fits a session: same track and car, most recently used.
     pub fn best_for(&self, session: &SessionInfo) -> Option<&LibraryEntry> {
-        self.best_for_excluding(session, None)
+        self.matches(session).max_by_key(|e| (e.last_used, e.added))
     }
 
-    /// [`Library::best_for`], passing over one lap (e.g. one whose file won't load).
-    pub fn best_for_excluding(&self, session: &SessionInfo, skip: Option<&str>) -> Option<&LibraryEntry> {
-        self.laps
-            .iter()
-            .filter(|e| Some(e.id.as_str()) != skip && e.status(Some(session)) == MatchStatus::Match)
+    /// [`Library::best_for`] among laps whose copy is in `laps_dir`, passing over `skip`
+    /// (one known not to load).
+    pub fn best_available_for(
+        &self,
+        session: &SessionInfo,
+        laps_dir: &Path,
+        skip: Option<&str>,
+    ) -> Option<&LibraryEntry> {
+        self.matches(session)
+            .filter(|e| Some(e.id.as_str()) != skip && e.lap_path(laps_dir).is_some_and(|p| p.is_file()))
             .max_by_key(|e| (e.last_used, e.added))
+    }
+
+    fn matches<'a, 's>(&'a self, session: &'s SessionInfo) -> impl Iterator<Item = &'a LibraryEntry> + use<'a, 's> {
+        self.laps.iter().filter(move |e| e.status(Some(session)) == MatchStatus::Match)
     }
 
     /// Laps for the picker: matches first, then same track, then the rest; recent first.
@@ -449,7 +471,7 @@ mod tests {
         std::fs::write(&index, &broken).unwrap();
 
         let (loaded, warning) = Library::load_with_warning(&index);
-        assert_eq!(loaded, Library { laps: vec![ferrari], active: None });
+        assert_eq!(loaded, Library { laps: vec![ferrari], ..Default::default() });
         let warning = warning.unwrap();
         assert!(warning.starts_with("2 saved laps couldn't be read"), "{warning}");
         let kept = backups(dir.path());
@@ -473,6 +495,38 @@ mod tests {
         assert!(warning.unwrap().starts_with("The lap library couldn't be read"));
         assert_eq!(std::fs::read(&backups(dir.path())[0]).unwrap(), [0u8; 300]);
         assert_eq!(Library::load_with_warning(&index), (Library::default(), None));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_locked_index_is_left_alone() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let (laps, index) = (Library::laps_dir(dir.path()), Library::index_path(dir.path()));
+        let mut lib = Library::default();
+        lib.import_bytes(&laps, NAME, SAMPLE, 1).unwrap();
+        lib.save(&index).unwrap();
+        let saved = std::fs::read(&index).unwrap();
+
+        // Another program holds the file with no sharing: it can't be read, copied or moved.
+        let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(&index).unwrap();
+        let (mut loaded, warning) = Library::load_with_warning(&index);
+        assert!(loaded.read_only && loaded.laps.is_empty());
+        assert!(warning.unwrap().contains("won't be saved until the overlay restarts"));
+        drop(lock);
+
+        // Even after the lock is gone, this session never writes over the real index.
+        loaded
+            .import_bytes(
+                &laps,
+                &NAME.replace("Ferrari 296 GT3", "BMW M4 GT3"),
+                b"LapDistPct,Brake,Throttle
+",
+                2,
+            )
+            .ok();
+        assert!(loaded.save(&index).is_err());
+        assert_eq!(std::fs::read(&index).unwrap(), saved);
     }
 
     #[test]

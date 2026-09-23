@@ -766,6 +766,7 @@ mod tests {
                 ),
             ],
             active: Some("a".into()),
+            ..Default::default()
         }
     }
 

@@ -1,6 +1,7 @@
 //! Windows integration: tray icon, global hotkey, file dialog, window styles, screen
 //! capture, and one overlay per data folder.
 
+use std::collections::HashSet;
 use std::io;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
@@ -27,9 +28,26 @@ pub enum DesktopEvent {
     Quit,
     /// The file dialog closed; `None` when cancelled.
     Picked(Option<PathBuf>),
-    /// Laps another launch of the program was given (a CSV dropped on the exe, "Open
-    /// with") while this one runs.
-    Import(Vec<PathBuf>),
+    /// Another launch of the program ran while this one does: the laps it was given (a
+    /// CSV dropped on the exe, "Open with"), or none when it only asked for the settings.
+    HandOver(HandOver),
+}
+
+/// One launch's hand-over. Its inbox file stays until [`HandOver::done`], so laps
+/// handed over while this overlay quits are taken at its next start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HandOver {
+    pub paths: Vec<PathBuf>,
+    receipt: PathBuf,
+}
+
+impl HandOver {
+    /// The paths were dealt with: forget the hand-over.
+    pub fn done(self) {
+        if let Err(e) = std::fs::remove_file(&self.receipt) {
+            log::warn!("Couldn't remove {}: {e}", self.receipt.display());
+        }
+    }
 }
 
 /// Raw events from OS callbacks and worker threads.
@@ -38,8 +56,7 @@ enum Raw {
     TrayClick,
     Hotkey(u32),
     Picked(Option<PathBuf>),
-    /// One launch's hand-over: its CSVs, or none when it only asked for the settings.
-    HandOver(Vec<PathBuf>),
+    HandOver(HandOver),
 }
 
 struct Tray {
@@ -151,8 +168,7 @@ impl Desktop {
             Raw::TrayClick => Some(DesktopEvent::OpenSettings),
             Raw::Hotkey(id) => (self.hotkey.map(|h| h.id()) == Some(id)).then_some(DesktopEvent::ToggleLock),
             Raw::Picked(path) => Some(DesktopEvent::Picked(path)),
-            Raw::HandOver(paths) if paths.is_empty() => Some(DesktopEvent::OpenSettings),
-            Raw::HandOver(paths) => Some(DesktopEvent::Import(paths)),
+            Raw::HandOver(h) => Some(DesktopEvent::HandOver(h)),
         }
     }
 
@@ -245,18 +261,22 @@ impl Instance {
     /// Makes this process the overlay for `data_dir`. `Ok(None)`: one already runs
     /// there; give it this launch's files with [`hand_over`].
     pub fn claim(data_dir: &Path) -> io::Result<Option<Self>> {
-        use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+        use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, GetLastError};
         use windows_sys::Win32::System::Threading::CreateMutexW;
         std::fs::create_dir_all(data_dir)?;
         let name = wide(&instance_name(data_dir));
         // SAFETY: a NUL-terminated name and default security; the error is read before
         // anything else can change it.
-        let (mutex, existed) = unsafe {
+        let (mutex, error) = unsafe {
             let mutex = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
-            (mutex, GetLastError() == ERROR_ALREADY_EXISTS)
+            (mutex, GetLastError())
         };
+        // Access denied: it exists, made by an overlay running as administrator.
+        if mutex.is_null() && error == ERROR_ACCESS_DENIED {
+            return Ok(None);
+        }
         let mutex = owned(mutex)?;
-        if existed {
+        if error == ERROR_ALREADY_EXISTS {
             return Ok(None);
         }
         Ok(Some(Self { mutex, wake: wake_event(data_dir)?, inbox: data_dir.join(INBOX) }))
@@ -271,10 +291,11 @@ impl Instance {
         let Self { mutex, wake, inbox } = self;
         let (ctx, tx) = (ctx.clone(), tx.clone());
         let spawned = std::thread::Builder::new().name("hand-over".into()).spawn(move || {
+            let mut seen = HashSet::new();
             loop {
-                for paths in take_hand_overs(&inbox) {
-                    log::info!("Another launch handed over {paths:?}");
-                    let _ = tx.send(Raw::HandOver(paths));
+                for h in read_hand_overs(&inbox, &mut seen) {
+                    log::info!("Another launch handed over {:?}", h.paths);
+                    let _ = tx.send(Raw::HandOver(h));
                     ctx.request_repaint();
                 }
                 // SAFETY: waits on an event handle this thread owns.
@@ -320,21 +341,23 @@ fn write_hand_over(inbox: &Path, paths: &[PathBuf]) -> io::Result<()> {
     crate::settings::write_atomic(&file, text.as_bytes())
 }
 
-/// Takes (reads and deletes) the hand-overs waiting in `inbox`, oldest first.
-fn take_hand_overs(inbox: &Path) -> Vec<Vec<PathBuf>> {
+/// The hand-overs waiting in `inbox` that aren't in `seen` yet, oldest first; each is
+/// added to `seen`.
+fn read_hand_overs(inbox: &Path, seen: &mut HashSet<PathBuf>) -> Vec<HandOver> {
     let Ok(entries) = std::fs::read_dir(inbox) else { return Vec::new() };
-    let mut files: Vec<PathBuf> =
-        entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "txt")).collect();
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "txt") && !seen.contains(p))
+        .collect();
     files.sort();
     files
-        .iter()
+        .into_iter()
         .filter_map(|file| {
-            let text = std::fs::read_to_string(file);
-            if let Err(e) = std::fs::remove_file(file) {
-                log::warn!("Couldn't remove {}: {e}", file.display());
-            }
-            let text = text.map_err(|e| log::warn!("Couldn't read {}: {e}", file.display())).ok()?;
-            Some(text.lines().filter(|line| !line.trim().is_empty()).map(PathBuf::from).collect())
+            seen.insert(file.clone());
+            let text = std::fs::read_to_string(&file).map_err(|e| log::warn!("Couldn't read {}: {e}", file.display()));
+            let paths = text.ok()?.lines().filter(|line| !line.trim().is_empty()).map(PathBuf::from).collect();
+            Some(HandOver { paths, receipt: file })
         })
         .collect()
 }
@@ -517,15 +540,23 @@ mod tests {
     }
 
     #[test]
-    fn hand_overs_are_taken_in_order_and_once() {
+    fn hand_overs_are_taken_in_order_once_and_kept_until_done() {
         let dir = tempfile::tempdir().unwrap();
         let inbox = dir.path().join(INBOX);
-        assert!(take_hand_overs(&inbox).is_empty(), "no inbox yet");
-        let laps = [PathBuf::from(r"C:\laps\Spa – 2:17.4.csv"), PathBuf::from(r"D:\b.csv")];
+        let paths = |hs: &[HandOver]| hs.iter().map(|h| h.paths.clone()).collect::<Vec<_>>();
+        let mut seen = HashSet::new();
+        assert!(read_hand_overs(&inbox, &mut seen).is_empty(), "no inbox yet");
+        let laps = [PathBuf::from("C:/laps/Spa 2.17.4.csv"), PathBuf::from("D:/b.csv")];
         write_hand_over(&inbox, &laps).unwrap();
         write_hand_over(&inbox, &[]).unwrap();
-        assert_eq!(take_hand_overs(&inbox), vec![laps.to_vec(), Vec::new()]);
-        assert!(take_hand_overs(&inbox).is_empty());
+        let taken = read_hand_overs(&inbox, &mut seen);
+        assert_eq!(paths(&taken), vec![laps.to_vec(), Vec::new()]);
+        assert!(read_hand_overs(&inbox, &mut seen).is_empty(), "each is sent once");
+
+        // Until done, they're still there for the next start (a fresh `seen`).
+        assert_eq!(read_hand_overs(&inbox, &mut HashSet::new()).len(), 2);
+        taken.into_iter().for_each(HandOver::done);
+        assert!(read_hand_overs(&inbox, &mut HashSet::new()).is_empty());
     }
 
     #[test]
@@ -543,7 +574,8 @@ mod tests {
         assert_eq!(signalled(), WAIT_OBJECT_0);
         assert_eq!(signalled(), WAIT_TIMEOUT, "auto-reset");
         let expected = std::env::current_dir().unwrap().join("lap.csv");
-        assert_eq!(take_hand_overs(&first.inbox), vec![vec![expected]], "made absolute");
+        let taken = read_hand_overs(&first.inbox, &mut HashSet::new());
+        assert_eq!(taken.iter().map(|h| h.paths.clone()).collect::<Vec<_>>(), vec![vec![expected]], "made absolute");
 
         drop(first);
         assert!(Instance::claim(dir.path()).unwrap().is_some(), "free again once it quits");

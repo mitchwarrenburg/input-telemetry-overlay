@@ -168,10 +168,15 @@ impl Decimator {
 /// (`cursor_x`) when text `text_width` wide fits there with room to spare, else across the
 /// plot. Always inside the plot (from its left edge when the text is wider).
 pub fn message_center_x(plot: Rect, cursor_x: Option<f32>, text_width: f32) -> f32 {
-    let fits_ahead = |x: &f32| plot.right() - x >= text_width + 2.0 * MESSAGE_PAD;
-    let left = cursor_x.filter(fits_ahead).unwrap_or(plot.left());
+    let need = text_width + 2.0 * MESSAGE_PAD;
     let half = text_width / 2.0;
-    fit((left + plot.right()) / 2.0, plot.left() + half, plot.right() - half)
+    let (lo, hi) = match cursor_x {
+        // Clear of the car: the look-ahead first, then the history behind it.
+        Some(x) if plot.right() - x >= need => (x, plot.right()),
+        Some(x) if x - plot.left() >= need => (plot.left(), x),
+        _ => (plot.left(), plot.right()),
+    };
+    fit((lo + hi) / 2.0, plot.left() + half, plot.right() - half)
 }
 
 /// Laps `k` whose copy `[k·period, (k+1)·period)` overlaps `[lo, hi]` (absolute axis
@@ -793,6 +798,10 @@ mod tests {
         assert_eq!(compact.right() - cursor, 172.0);
         assert_eq!(message_center_x(compact, Some(cursor), w), compact.center().x);
         assert_eq!(message_center_x(compact, None, w), compact.center().x);
+
+        // Little look-ahead but plenty of history: the text goes behind the car.
+        let cursor = wide.right() - 40.0;
+        assert_eq!(message_center_x(wide, Some(cursor), w), (wide.left() + cursor) / 2.0);
 
         // Always inside the plot; text wider than the plot starts at its left edge.
         for plot in [wide, compact] {

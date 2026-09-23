@@ -128,6 +128,8 @@ pub struct OverlayApp {
     error: Option<String>,
     /// Why the chosen saved lap couldn't be loaded; cleared once a lap loads.
     load_error: Option<String>,
+    /// What went wrong reading the lap library at startup; shown until dismissed.
+    library_warning: Option<String>,
     /// Why the unlock shortcut couldn't be registered.
     hotkey_error: Option<String>,
     settings_open: bool,
@@ -182,8 +184,9 @@ impl OverlayApp {
             live: false,
             demo: None,
             desktop,
-            error: library_warning,
+            error: None,
             load_error: None,
+            library_warning,
             hotkey_error,
             settings_open: opts.open_settings.is_some() || opts.settings_screenshot.is_some(),
             settings_was_open: false,
@@ -272,7 +275,7 @@ impl OverlayApp {
         if self.live
             && self.settings.auto_reference
             && let Some(session) = &self.session
-            && reference::auto_pick(&mut self.library, session, self.reference.broken(), unix_now())
+            && reference::auto_pick(&mut self.library, &self.paths.laps, session, self.reference.broken(), unix_now())
         {
             self.library_changed();
         }
@@ -333,13 +336,15 @@ impl OverlayApp {
                         self.import(&path);
                     }
                 }
-                DesktopEvent::Import(paths) => {
+                DesktopEvent::HandOver(h) => {
                     if self.settings_open {
                         ctx.send_viewport_cmd_to(settings_viewport(), ViewportCommand::Focus);
                     }
-                    for path in &paths {
+                    self.settings_open = true;
+                    for path in &h.paths {
                         self.import(path);
                     }
+                    h.done();
                 }
             }
         }
@@ -375,7 +380,8 @@ impl OverlayApp {
             PanelAction::ResetLayout => reset_layout(ctx, frame),
             PanelAction::ResetAll => self.settings = reset_all(&self.settings),
             PanelAction::DismissError if self.error.is_some() => self.error = None,
-            PanelAction::DismissError => self.load_error = None,
+            PanelAction::DismissError if self.load_error.is_some() => self.load_error = None,
+            PanelAction::DismissError => self.library_warning = None,
         }
     }
 
@@ -540,7 +546,7 @@ impl OverlayApp {
                 session: self.session.as_ref(),
                 card: self.reference.card(self.session.as_ref()),
                 active_id: self.library.active.as_deref(),
-                error: self.error.as_deref().or(self.load_error.as_deref()),
+                error: self.error.as_deref().or(self.load_error.as_deref()).or(self.library_warning.as_deref()),
                 hotkey_error: self.hotkey_error.as_deref(),
                 connection,
                 browsing: self.browsing,
@@ -909,7 +915,7 @@ mod tests {
             added: 1,
             last_used: 1,
         };
-        let h = SettingsHarness::new(Library { laps: vec![lap], active: None });
+        let h = SettingsHarness::new(Library { laps: vec![lap], ..Default::default() });
         let mut s = Settings { tab: SettingsTab::Reference, ..Default::default() };
         h.activate(&mut s, "Remove lap");
         assert!(still_open(&h.frame(&mut s, vec![key(egui::Key::Escape)])), "Escape cancels \"Remove?\"");

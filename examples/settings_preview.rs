@@ -223,8 +223,8 @@ impl Preview {
             lap,
             silverstone,
             spa,
-            saved: Library { laps: saved_laps(), active: Some("ferrari".into()) },
-            many: Library { laps: many_laps(), active: Some("ferrari".into()) },
+            saved: Library { laps: saved_laps(), active: Some("ferrari".into()), ..Default::default() },
+            many: Library { laps: many_laps(), active: Some("ferrari".into()), ..Default::default() },
             empty: Library::default(),
         }
     }

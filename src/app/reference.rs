@@ -107,17 +107,23 @@ fn status(lap: &Lap, session: Option<&SessionInfo>) -> MatchStatus {
 
 /// Switches the library to its best lap for `session` unless the active one already
 /// matches track, layout and car and loads. `broken` is a lap known not to load: it
-/// never satisfies the session and is never picked. Returns whether the active lap
-/// changed.
+/// never satisfies the session and is never picked, and neither is a lap whose copy is
+/// missing from `laps_dir`. Returns whether the active lap changed.
 ///
 /// Only for a real session: the demo's pretend one mustn't change the saved choice.
-pub fn auto_pick(library: &mut Library, session: &SessionInfo, broken: Option<&str>, now: u64) -> bool {
+pub fn auto_pick(
+    library: &mut Library,
+    laps_dir: &Path,
+    session: &SessionInfo,
+    broken: Option<&str>,
+    now: u64,
+) -> bool {
     let usable = |id: &str| Some(id) != broken;
     if library.active_entry().is_some_and(|e| usable(&e.id) && e.status(Some(session)) == MatchStatus::Match) {
         return false;
     }
     // The broken lap may well be the most recent match.
-    let Some(best) = library.best_for_excluding(session, broken).map(|e| e.id.clone()) else {
+    let Some(best) = library.best_available_for(session, laps_dir, broken).map(|e| e.id.clone()) else {
         return false;
     };
     library.set_active(Some(&best), now);
@@ -273,14 +279,14 @@ mod tests {
         let mut lib = Library::default();
         let (ferrari, _) = lib.import_bytes(&laps, NAME, SAMPLE, 1).unwrap();
         let session = demo_session(&sample_lap());
-        assert!(!auto_pick(&mut lib, &session, None, 2), "already the best");
+        assert!(!auto_pick(&mut lib, &laps, &session, None, 2), "already the best");
 
         lib.set_active(None, 3);
-        assert!(auto_pick(&mut lib, &session, None, 4));
+        assert!(auto_pick(&mut lib, &laps, &session, None, 4));
         assert_eq!(lib.active.as_deref(), Some(ferrari.id.as_str()));
 
         lib.set_active(None, 5);
-        assert!(!auto_pick(&mut lib, &spa(), None, 6), "nothing for Spa");
+        assert!(!auto_pick(&mut lib, &laps, &spa(), None, 6), "nothing for Spa");
         assert!(lib.active.is_none());
     }
 
@@ -300,11 +306,31 @@ mod tests {
         let mut r = Reference::default();
         assert!(r.refresh(&lib, &laps, Some(&session), None).is_err());
         assert_eq!(r.broken(), Some(a.id.as_str()));
-        assert!(auto_pick(&mut lib, &session, r.broken(), 3));
+        assert!(auto_pick(&mut lib, &laps, &session, r.broken(), 3));
         assert_eq!(lib.active.as_deref(), Some(b.id.as_str()));
         r.refresh(&lib, &laps, Some(&session), None).unwrap();
         assert!(r.lap().is_some() && r.broken().is_none());
-        assert!(!auto_pick(&mut lib, &session, r.broken(), 4), "B stays");
+        assert!(!auto_pick(&mut lib, &laps, &session, r.broken(), 4), "B stays");
+    }
+
+    #[test]
+    fn auto_pick_skips_a_lap_whose_copy_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let laps = Library::laps_dir(dir.path());
+        let mut lib = Library::default();
+        let (b, _) = lib.import_bytes(&laps, NAME, SAMPLE, 1).unwrap();
+        let mut a_bytes = SAMPLE.to_vec();
+        a_bytes.extend_from_slice(
+            b"
+",
+        );
+        let (a, _) = lib.import_bytes(&laps, NAME, &a_bytes, 2).unwrap();
+        std::fs::remove_file(laps.join(&a.file)).unwrap();
+        lib.set_active(None, 3);
+
+        // A is the most recent match, but its copy is gone: B is picked, not A.
+        assert!(auto_pick(&mut lib, &laps, &demo_session(&sample_lap()), None, 4));
+        assert_eq!(lib.active.as_deref(), Some(b.id.as_str()));
     }
 
     #[test]
