@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Brake Point Countdown</title>
+  <title>Brake Design Board</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
@@ -68,7 +68,7 @@
     .seq .backdrop { min-height: 112px; }
 
     /* Grade scale */
-    .scale { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border-radius: 10px; overflow: hidden; border: 1px solid var(--ui-line); }
+    .scale { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border-radius: 10px; overflow: hidden; border: 1px solid var(--ui-line); }
     .scale > div { display: grid; gap: 8px; align-content: start; padding: 14px 12px; background: var(--ui-raised); border-right: 1px solid var(--ui-line); }
     .scale > div:last-child { border-right: 0; }
     .scale .cue-chip { justify-self: start; font: 700 11px/1 var(--font-hud); }
@@ -77,6 +77,16 @@
 
     .graph-host { position: relative; height: 176px; border-radius: 10px; overflow: hidden; background: linear-gradient(#34495a, #1b2a18); }
     .graph-host .ito-overlay { position: absolute; left: 12px; top: 12px; right: 12px; bottom: 12px; width: auto; height: auto; }
+
+    /* Peak labels */
+    .shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+    .shot { display: grid; gap: 6px; align-content: start; }
+    .shot .frame { overflow-x: auto; padding: 8px; border-radius: 10px; background: linear-gradient(#34495a, #1b2a18); }
+    .shot .ito-overlay { position: relative; left: auto; top: auto; }
+    .shots.wide { grid-template-columns: 1fr; }
+    .shots.wide .frame { justify-self: start; max-width: 100%; }
+    .rules { margin: 0; padding-left: 18px; display: grid; gap: 6px; color: var(--ui-muted); font-size: 13px; line-height: 1.5; max-width: 90ch; }
+    .rules b { color: var(--ui-text); font-weight: 600; }
 
     table.spec-table { width: 100%; border-collapse: collapse; font-size: 13px; }
     .spec-table th, .spec-table td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--ui-line); vertical-align: top; }
@@ -88,6 +98,7 @@
     @media (max-width: 820px) {
       .anatomy { grid-template-columns: 1fr; }
       .scale { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .shots { grid-template-columns: 1fr; }
       .scale > div { border-bottom: 1px solid var(--ui-line); }
       .grid { grid-template-columns: 1fr; }
     }
@@ -96,12 +107,13 @@
 <body>
   <main class="board">
     <header>
-      <h1>Brake point countdown</h1>
+      <h1>Brake point countdown and peak labels</h1>
       <p class="lede">A second overlay window that counts <b>3 · 2 · 1 · BRAKE</b> into each brake point of the loaded
         reference lap, with the bar filling in step, so you can match when the reference driver got on the brake.
         It shows the <b>target peak pressure</b> for the zone, then grades your timing:
-        <b>early, good or late</b> (with "very" either side). Every window below is drawn by the renderer the
-        <a href="index.html">live prototype</a> uses; open it and press <b>N</b> to jump to the next zone.</p>
+        <b>early, good, perfect or late</b> (with "very" either side). Every window below is drawn by the renderer the
+        <a href="index.html">live prototype</a> uses; open it and press <b>N</b> to jump to the next zone.
+        <a href="#labels">Peak labels</a>, further down, covers the redesign of the graph's brake peak labels.</p>
     </header>
 
     <section>
@@ -111,9 +123,9 @@
         <ol class="callouts">
           <li><span class="dot-n">1</span><span><b>Zone and distance.</b> Which brake zone is next (numbered in lap order) and how far to its brake point.</span></li>
           <li><span class="dot-n">2</span><span><b>Zone strip.</b> One pip per zone, coloured by your last grade there. This lap's are bright, last lap's are dim, the next zone is ringed.</span></li>
-          <li><span class="dot-n">3</span><span><b>Countdown bar.</b> Three one-count segments filling toward the cap. The last segment and the fill turn red on "1".</span></li>
-          <li><span class="dot-n">4</span><span><b>Cap.</b> The count, then <b>BRAKE</b> in solid red, flashing, at the reference brake point.</span></li>
-          <li><span class="dot-n">5</span><span><b>Target.</b> The zone's reference peak (outlined red, like the graph's reference labels). The gauge fills with your pressure up to the white target line.</span></li>
+          <li><span class="dot-n">3</span><span><b>Countdown bar.</b> Three one-count segments filling toward the cap: green for 3, yellow for 2, red for 1.</span></li>
+          <li><span class="dot-n">4</span><span><b>Cap.</b> The count, outlined in the colour of the segment filling, then <b>BRAKE</b> in solid red, flashing, at the reference brake point.</span></li>
+          <li><span class="dot-n">5</span><span><b>Target.</b> The zone's reference peak, outlined in red. The gauge fills with your pressure up to the white target line.</span></li>
           <li><span class="dot-n">6</span><span><b>Timing.</b> The last zone's grade, how far off the reference brake-on you were in seconds and metres (− early, + late), and your peak against the target.</span></li>
         </ol>
       </div>
@@ -128,7 +140,8 @@
       <h2>Brake timing grades</h2>
       <div class="scale" id="scale"></div>
       <p class="note" style="margin-top: 10px">Graded on the reference lap's clock, so a slow corner and a fast one are judged alike.
-        The window is a setting (default <b>±0.08 s</b>, about 5 m at 230 km/h); "very" starts at 3× the window. Chevrons point the way the graph does
+        <b>Perfect</b> is within <b>±0.03 s</b> and <b>Good</b> within <b>±0.08 s</b> (about 2 m and 5 m at 230 km/h); both are settings, and "very"
+        starts at 3× the good window. Chevrons point the way the graph does
         (early is left, behind the car), so the grade reads without colour.</p>
     </section>
 
@@ -145,6 +158,20 @@
         reference brake point to where you braked.</p>
     </section>
 
+    <section id="labels">
+      <h2>Peak labels (redesign)</h2>
+      <ol class="rules">
+        <li><b>Off the data.</b> The graph records, pixel column by pixel column, where every line it drew passes (your throttle and brake, the reference edges) and how far the reference fills reach. Each label tries about 50 spots around its peak and takes the one that costs least: crossing a line costs most, covering fill a little, a long leader or one that crosses a line some more.</li>
+        <li><b>Left out rather than in the way.</b> A reference label may graze a line by a column or two, yours by a quarter of its width. A label with no such spot isn't drawn. Labels never sit on the cursor, its dots or the brake point markers.</li>
+        <li><b>One tag per braking zone.</b> Your peak and the reference's in the same zone share one tag: yours in the solid pill, the reference's beside it as a plain number. If the pair doesn't fit it splits into two labels.</li>
+        <li><b>Lighter.</b> Reference peaks are plain numbers with a dark halo, no box, so they cover only their own strokes. No "%" (the axis says it). A hairline leader joins a label to its dot only when it sits more than 7 px away.</li>
+        <li><b>Most useful first.</b> The zone you're braking in, then the next zone ahead, then by distance from the car with big peaks ahead of light dabs. Small graphs show fewer: leaders stay under 45% of the plot's height and there's one label per 80 px of width.</li>
+        <li><b>Steady.</b> A label keeps last frame's spot unless another is clearly better, and glides (about 0.1 s) when it moves. Played back over two laps, labels change spot about once every 4 s on average, mostly while your peak is still rising.</li>
+      </ol>
+      <div class="shots wide" id="shotsWide" style="margin-top: 14px"></div>
+      <div class="shots" id="shots" style="margin-top: 12px"></div>
+    </section>
+
     <section>
       <h2>Sizes</h2>
       <div class="grid" id="sizes"></div>
@@ -158,7 +185,7 @@
           <tr><td>Brake point</td><td>Where the reference brake crosses 5% (the same threshold that finds brake zones and peak labels). Zones below <b>Skip zones below</b> (default 15%) get no countdown, but still take part in matching, so a light dab isn't mistaken for early braking into the next zone.</td></tr>
           <tr><td>Countdown</td><td>Starts <b>Countdown</b> seconds (default 3 s, one count per second) before the brake point, minus <b>Cue early by</b> (default off; up to 0.3 s to allow for reaction). After a short straight it joins part-way, at 2 or 1, with the skipped part hatched. It never runs while the reference is still braking for the zone before.</td></tr>
           <tr><td>Your brake-on</td><td>Your brake crossing 5%. It's matched to the first zone not yet over, if it's after the previous zone ended and no more than 4 s before the brake point. The first brake-on in a zone counts. Known gap: trail-braking without release through two reference zones (a chicane) reads as No brake for the second.</td></tr>
-          <tr><td>Grade</td><td><code>Δ = your brake-on − reference brake-on</code>, in reference seconds (the metres beside it are for landmarks). Past the brake point without braking, the grade counts up live (outlined chip) until you brake. A zone driven through without braking is <b>No brake</b>.</td></tr>
+          <tr><td>Grade</td><td><code>Δ = your brake-on − reference brake-on</code>, in reference seconds (the metres beside it are for landmarks). Perfect within ±0.03 s, good within ±0.08 s, early or late to 3× that, then very early or very late. Past the brake point without braking, the grade counts up live (outlined chip) until you brake. A zone driven through without braking is <b>No brake</b>.</td></tr>
           <tr><td>Peak</td><td>Your highest pressure in the zone against the reference peak. The difference shows once you're off the brake.</td></tr>
           <tr><td>Hold</td><td>The timing row keeps the last zone's result until the next zone is decided. The zone strip keeps one result per zone for this lap and the last.</td></tr>
           <tr><td>Sound</td><td>Optional: a short beep on each count and a long, higher one on BRAKE.</td></tr>
@@ -172,6 +199,7 @@
   <script src="src/lap.js"></script>
   <script src="src/sim.js"></script>
   <script src="src/live-trace.js"></script>
+  <script src="src/peak-labels.js"></script>
   <script src="src/graph.js"></script>
   <script src="src/brake-cue.js"></script>
   <script src="src/board.js"></script>

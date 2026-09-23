@@ -141,9 +141,11 @@
         <input type="range" min="0" max="50" step="1" data-setting="labelMin" data-unit="%">
       </label>
       <div class="label-key" data-needs="labels">
-        <span><i class="key-pill key-live">82%</i>Your peak</span>
-        <span><i class="key-pill key-ref">76%</i>Reference peak</span>
+        <span><i class="key-pill key-live">82</i>Your peak</span>
+        <span><i class="key-pill key-ref">76</i>Reference peak</span>
+        <span><i class="key-pair"><i class="key-pill key-live">82</i><i class="key-pill key-ref">76</i></i>Both, one braking zone</span>
       </div>
+      <p class="set-hint" data-needs="labels">Labels keep off the traces and the cursor. One that can't find a clear spot is left out.</p>
     </div>
 
     <!-- Timing -->
@@ -242,6 +244,7 @@
   <script src="src/lap.js"></script>
   <script src="src/sim.js"></script>
   <script src="src/live-trace.js"></script>
+  <script src="src/peak-labels.js"></script>
   <script src="src/graph.js"></script>
   <script src="src/brake-cue.js"></script>
   <script src="src/frame.js"></script>

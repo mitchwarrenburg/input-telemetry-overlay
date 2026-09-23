@@ -640,7 +640,9 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px 
 .label-key span { display: inline-flex; align-items: center; gap: 7px; }
 .key-pill { padding: 3px 5px; border-radius: 4px; font: 700 11px/1 var(--font-hud); font-style: normal; }
 .key-live { background: #e0301f; color: #fff; }
-.key-ref { border: 1px solid rgba(255, 61, 46, 0.9); background: rgb(var(--hud-surface)); color: var(--hud-text); font-weight: 600; }
+/* The graph draws reference peaks as plain numbers with a dark halo, not in a box. */
+.key-ref { padding: 3px 1px; color: #ffb8b0; font-weight: 600; text-shadow: 0 0 2px rgb(var(--hud-surface)), 0 0 2px rgb(var(--hud-surface)); }
+.key-pair { display: inline-flex; align-items: center; gap: 2px; font-style: normal; }
 
 /* Grade key (Brakes tab) */
 .grade-key {
