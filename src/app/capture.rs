@@ -89,7 +89,11 @@ impl Screenshots {
         }
         if let Some(path) = self.settings.take() {
             match settings_px.and_then(capture_rect) {
-                Some(image) => save(&path, &image),
+                Some(mut image) => {
+                    // The screen behind the panel's rounded corners isn't ours to save.
+                    clear_outside_corners(&mut image, crate::ui::settings_panel::RADIUS * ctx.pixels_per_point());
+                    save(&path, &image);
+                }
                 None => log::error!("No settings window to capture for {}", path.display()),
             }
         }
@@ -111,6 +115,35 @@ fn root_screenshot(ctx: &egui::Context) -> Option<std::sync::Arc<ColorImage>> {
 fn capture_rect(r: Rect) -> Option<ColorImage> {
     let (min, max) = (r.min.round(), r.max.round());
     crate::platform::capture_screen(min.x as i32, min.y as i32, (max.x - min.x) as i32, (max.y - min.y) as i32)
+}
+
+/// Makes the pixels outside rounded corners of `radius` px fully transparent.
+fn clear_outside_corners(image: &mut ColorImage, radius: f32) {
+    let [w, h] = image.size;
+    let r = radius.max(0.0);
+    for y in 0..h {
+        for x in 0..w {
+            // Distance past the nearest corner's circle, if the pixel is in a corner box.
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            let cx = if px < r {
+                r
+            } else if px > w as f32 - r {
+                w as f32 - r
+            } else {
+                continue;
+            };
+            let cy = if py < r {
+                r
+            } else if py > h as f32 - r {
+                h as f32 - r
+            } else {
+                continue;
+            };
+            if (px - cx).hypot(py - cy) > r {
+                image.pixels[y * w + x] = egui::Color32::TRANSPARENT;
+            }
+        }
+    }
 }
 
 fn save(path: &Path, image: &ColorImage) {
@@ -152,6 +185,19 @@ mod tests {
             let icon = decode_png(bytes).unwrap();
             assert_eq!((icon.width, icon.height), (size, size));
             assert_eq!(icon.pixels.len(), (size * size * 4) as usize);
+        }
+    }
+
+    #[test]
+    fn corners_outside_the_radius_are_cleared() {
+        let mut image = ColorImage::new([40, 30], vec![egui::Color32::WHITE; 40 * 30]);
+        clear_outside_corners(&mut image, 12.0);
+        let at = |x: usize, y: usize| image.pixels[y * 40 + x];
+        for (x, y) in [(0, 0), (39, 0), (0, 29), (39, 29), (1, 2)] {
+            assert_eq!(at(x, y), egui::Color32::TRANSPARENT, "corner pixel {x},{y}");
+        }
+        for (x, y) in [(20, 0), (0, 15), (12, 12), (20, 15), (39, 15)] {
+            assert_eq!(at(x, y), egui::Color32::WHITE, "inside pixel {x},{y}");
         }
     }
 }

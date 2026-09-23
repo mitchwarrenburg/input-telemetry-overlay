@@ -107,7 +107,8 @@ const PAD_X: f32 = 15.0;
 const GAP: f32 = 13.0;
 /// Space between a row's label and its control.
 const ROW_GAP: f32 = 6.0;
-const RADIUS: f32 = 12.0;
+/// Corner radius of the panel, points.
+pub const RADIUS: f32 = 12.0;
 const LAP_ROW_HEIGHT: f32 = 46.0;
 /// The saved-laps list scrolls past this height (three and a half rows).
 const LAPS_MAX_HEIGHT: f32 = 3.5 * LAP_ROW_HEIGHT + 3.0 * ROW_GAP;

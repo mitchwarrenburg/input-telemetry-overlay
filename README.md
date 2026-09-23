@@ -50,8 +50,9 @@ Garage 61 and the sim name tracks and cars differently: Garage 61 says "Silverst
 Circuit (Grand Prix)" where iRacing's session says "Silverstone Circuit" / "Arena Grand
 Prix". So the overlay checks the lap itself:
 
-- **Track and layout:** the lap's length (from its Speed column) against the session's
-  track length, and where it starts against the track's position.
+- **Track and layout:** where the lap was driven (its GPS columns) against the track's
+  location, and the lap's length (from its Speed column) against the session's track
+  length, which tells layouts of one circuit apart.
 - **Car:** the car name, allowing for suffixes ("Dallara P217" vs "Dallara P217 LMP2").
 - Names are the fallback when the file has no speed or position columns.
 
@@ -78,6 +79,8 @@ lap from another track or layout is hidden, because its distances wouldn't line 
 | Reference | The current reference and how it matches the session, the saved laps, loading CSVs, auto-pick |
 
 Settings and the library live in `%APPDATA%\input-telemetry-overlay`.
+
+![Display settings](docs/images/settings-display.png)
 
 ## Command line
 
