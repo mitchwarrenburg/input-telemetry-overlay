@@ -224,6 +224,6 @@
   shot($("#shotsWide"), 4980, 680, 170,
     "The next zone's reference peak in the look-ahead: its number waits at the top of its line.");
   shot($("#shots"), 3960, 300, 190, "Narrow: the same labels, in the same places.");
-  shot($("#shots"), 1060, 272, 90, "The smallest graph: the reference row fills the top, so your pills hang below their apexes.");
-  shot($("#shots"), 2140, 272, 90, "A high peak of yours near a reference label: your pill drops below the apex instead.");
+  shot($("#shots"), 1060, 272, 90, "The smallest graph: the reference row fills the top, so your peak labels hang below their apexes.");
+  shot($("#shots"), 2140, 272, 90, "A high peak of yours near a reference label: your label drops below the apex instead.");
 })();

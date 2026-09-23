@@ -11,7 +11,6 @@
     muted: "#7f8b89",
     grid: "rgba(255, 255, 255, 0.07)",
     baseline: "rgba(255, 255, 255, 0.16)",
-    brakePill: "rgba(224, 48, 31, 0.82)", // your peak pill: a step darker than the line, slightly see-through
     peakLine: "rgba(232, 239, 238, 0.5)", // reference peak: dotted line and its label's border
   };
   // Reference peak labels sit in their own row between the header and the plot, so they
@@ -19,7 +18,7 @@
   const RAIL_H = 13;
   const RAIL_GAP = 2; // row to the plot's top edge
   const RAIL_ROOM = 6;
-  const PIN_H = 14; // your peak's pill
+  const PIN_H = 12; // your peak's number
   const PIN_TIP = 4; // its pointer
   const FONT = '"Barlow Semi Condensed", "Segoe UI", system-ui, sans-serif';
   const DIST_STEPS = [25, 50, 100, 200, 250, 500, 1000, 2000];
@@ -404,9 +403,10 @@
       return boxes;
     }
 
-    // Your peaks: a solid pill whose pointer touches the apex of your brake line. It sits
-    // above the apex, or below when above would run into a reference label, the header or
-    // another pin. Below, it reaches right from the apex: a peak is usually where the brake
+    // Your peaks: a white number, no background, over a white pointer that touches the apex
+    // of your brake line. Both have a dark outline so they read over the traces and fills.
+    // It sits above the apex, or below when above would run into a reference label, the
+    // header or another pin. Below, it reaches right from the apex: a peak is usually where the brake
     // line tops out, so that's under the line rather than across the rise to it. The one
     // you're braking in is placed first.
     drawPins(sc, X, Y, plot, taken) {
@@ -423,26 +423,33 @@
       const drawn = [];
       for (const p of pins) {
         const text = `${Math.round(p.peak * 100)}%`;
-        const w = Math.ceil(ctx.measureText(text).width) + 8;
+        const w = Math.ceil(ctx.measureText(text).width) + 4;
         const x = clamp(p.x - w / 2, plot.x, plot.x + plot.w - w);
         const above = { x, y: p.y - 2 - PIN_TIP - PIN_H, w, h: PIN_H, up: false };
         const below = { x: clamp(p.x - 9, plot.x, plot.x + plot.w - w), y: p.y + 2 + PIN_TIP, w, h: PIN_H, up: true };
         const clear = (b) => b.y >= 2 && b.y + b.h <= plot.y + plot.h && !placed.some((q) => overlaps(q, b, 1));
         const box = clear(above) ? above : clear(below) ? below : above;
         placed.push(box);
-        drawn.push({ box, text, ax: clamp(p.x, box.x + 4, box.x + w - 4), ay: p.y });
+        drawn.push({ box, text, ax: clamp(p.x, box.x + 3, box.x + w - 3), ay: p.y });
       }
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = `rgba(${INK.surface}, 0.92)`;
+      ctx.fillStyle = "#fff";
       for (const { box, text, ax, ay } of drawn) {
-        ctx.fillStyle = INK.brakePill;
-        ctx.beginPath(); ctx.roundRect(box.x, box.y, box.w, box.h, 3); ctx.fill();
         // The pointer's tip sits on the top (or bottom) edge of the line at the apex.
-        const edge = box.up ? box.y : box.y + box.h;
+        const edge = box.up ? box.y + 1 : box.y + box.h - 1;
         const tip = box.up ? ay + 2 : ay - 2;
-        ctx.beginPath(); ctx.moveTo(ax - 4, edge); ctx.lineTo(ax + 4, edge); ctx.lineTo(ax, tip); ctx.closePath(); ctx.fill();
-        ctx.fillStyle = "#fff";
-        ctx.fillText(text, box.x + box.w / 2, box.y + box.h / 2 + 0.5);
+        const arrow = new Path2D();
+        arrow.moveTo(ax - 3.5, edge); arrow.lineTo(ax + 3.5, edge); arrow.lineTo(ax, tip); arrow.closePath();
+        ctx.lineWidth = 2;
+        ctx.stroke(arrow);
+        ctx.fill(arrow);
+        const tx = box.x + box.w / 2, ty = box.y + box.h / 2 + 0.5;
+        ctx.lineWidth = 3.5;
+        ctx.strokeText(text, tx, ty);
+        ctx.fillText(text, tx, ty);
       }
     }
   }
