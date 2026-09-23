@@ -1,8 +1,47 @@
-//! The overlay application (eframe).
+//! The overlay application (eframe): the transparent overlay window, live and demo
+//! input, reference selection, the settings window, tray icon and hotkey.
+#![cfg(windows)]
 
-use std::path::PathBuf;
+mod capture;
+mod geometry;
+mod live;
+mod reference;
 
-use crate::settings::SettingsTab;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use eframe::egui::{self, Rect, Vec2, ViewportBuilder, ViewportCommand, ViewportId, pos2, vec2};
+use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::monitor::MonitorHandle;
+use winit::window::Window;
+
+use crate::demo;
+use crate::lap::Lap;
+use crate::library::Library;
+use crate::platform::{self, Desktop, DesktopEvent};
+use crate::settings::{self, Settings, SettingsTab, WindowRect};
+use crate::telemetry::iracing::IracingReader;
+use crate::telemetry::{SessionInfo, TelemetryEvent};
+use crate::ui::graph::{self, GraphScene, LabelOptions};
+use crate::ui::overlay::{self, Chrome, HEADER_HEIGHT, Intent};
+use crate::ui::settings_panel::{self, ConnectionState, PanelAction, PanelContext, PanelOutput};
+use crate::ui::theme;
+
+use capture::Screenshots;
+use live::{Demo, LiveFeed};
+use reference::Reference;
+
+const TITLE: &str = "Input Telemetry Overlay";
+const APP_ID: &str = "input-telemetry-overlay";
+/// Settings are written this long after the last change.
+const SAVE_DELAY: Duration = Duration::from_millis(500);
+/// The size readout stays up this long after the window stops changing size.
+const READOUT_HOLD: Duration = Duration::from_millis(800);
+/// egui takes one predicted frame off `request_repaint_after` delays; add it back.
+const FRAME: Duration = Duration::from_millis(17);
+const WAITING: (&str, &str) = ("WAITING FOR IRACING", "Start a session, or turn on demo mode in settings");
+const NO_REFERENCE: (&str, &str) = ("NO REFERENCE LAP", "Drop a Garage 61 CSV here, or ⚙ → Reference");
 
 /// Command-line options.
 #[derive(Debug, Clone, Default)]
@@ -19,6 +58,680 @@ pub struct LaunchOptions {
     pub data_dir: Option<PathBuf>,
 }
 
-pub fn run(_opts: LaunchOptions) -> eframe::Result {
-    Ok(())
+impl LaunchOptions {
+    /// Where settings, the lap library and the log live.
+    pub fn data_dir(&self) -> PathBuf {
+        self.data_dir.clone().unwrap_or_else(settings::app_dir)
+    }
+}
+
+/// Opens the overlay and runs until it's closed. Fails when no window can be created
+/// (e.g. no OpenGL 2 driver).
+pub fn run(opts: LaunchOptions) -> eframe::Result {
+    let settings = Settings::load(&Paths::new(&opts.data_dir()).settings);
+    let options = eframe::NativeOptions {
+        viewport: overlay_viewport(&settings),
+        renderer: eframe::Renderer::Glow,
+        ..Default::default()
+    };
+    let result = eframe::run_native(TITLE, options, Box::new(move |cc| Ok(Box::new(OverlayApp::new(cc, opts, settings)))));
+    if let Err(e) = &result {
+        log::error!("The overlay couldn't start: {e}");
+    }
+    result
+}
+
+/// Files in the data folder.
+struct Paths {
+    settings: PathBuf,
+    library: PathBuf,
+    laps: PathBuf,
+}
+
+impl Paths {
+    fn new(dir: &Path) -> Self {
+        Self { settings: dir.join("settings.json"), library: Library::index_path(dir), laps: Library::laps_dir(dir) }
+    }
+}
+
+pub struct OverlayApp {
+    paths: Paths,
+    /// `--demo`: drive the simulated car and don't read iRacing.
+    force_demo: bool,
+    settings: Settings,
+    /// The settings as last applied; a difference is applied and saved.
+    applied: Settings,
+    save_due: Option<Instant>,
+    library: Library,
+    reference: Reference,
+    /// The bundled lap the demo drives.
+    sample: Arc<Lap>,
+    session: Option<SessionInfo>,
+    feed: LiveFeed,
+    reader: Option<IracingReader>,
+    live: bool,
+    demo: Option<Demo>,
+    desktop: Desktop,
+    /// Last import, load or hotkey error, shown in the settings window.
+    error: Option<String>,
+    settings_open: bool,
+    /// Height the settings panel asked for last frame.
+    settings_height: f32,
+    /// A file dialog is open.
+    browsing: bool,
+    last_window_size: Option<Vec2>,
+    readout_until: Option<Instant>,
+    screenshots: Option<Screenshots>,
+}
+
+impl OverlayApp {
+    fn new(cc: &eframe::CreationContext<'_>, opts: LaunchOptions, settings: Settings) -> Self {
+        let ctx = &cc.egui_ctx;
+        theme::install_fonts(ctx);
+        ctx.set_theme(egui::Theme::Dark);
+        ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        if let Some(window) = cc.winit_window() {
+            prepare_window(window, settings.window);
+        }
+
+        let tray_icon = decode_icon(include_bytes!("../assets/icon/icon-32.png")).map(|i| (i.pixels, i.width, i.height));
+        let mut desktop = Desktop::new(ctx, tray_icon, settings.locked);
+        let error = desktop.set_hotkey(&settings.unlock_hotkey).err();
+        let reader = (!opts.demo).then(|| spawn_reader(ctx, settings.update_hz));
+        let paths = Paths::new(&opts.data_dir());
+        let mut app = Self {
+            library: Library::load(&paths.library),
+            paths,
+            force_demo: opts.demo,
+            applied: settings.clone(),
+            settings,
+            save_due: None,
+            reference: Reference::default(),
+            sample: Arc::new(demo::sample_lap()),
+            session: None,
+            feed: LiveFeed::default(),
+            reader,
+            live: false,
+            demo: None,
+            desktop,
+            error,
+            settings_open: opts.open_settings.is_some() || opts.settings_screenshot.is_some(),
+            settings_height: 400.0,
+            browsing: false,
+            last_window_size: None,
+            readout_until: None,
+            screenshots: Screenshots::new(opts.screenshot, opts.settings_screenshot),
+        };
+        if let Some(tab) = opts.open_settings {
+            app.settings.tab = tab;
+        }
+        if app.settings.locked && !app.desktop.can_unlock() {
+            log::warn!("No tray icon or hotkey to unlock with: starting unlocked");
+            app.settings.locked = false;
+        }
+        app.enter_idle(Instant::now());
+        app
+    }
+
+    fn connection(&self) -> ConnectionState {
+        match (self.live, &self.demo) {
+            (true, _) => ConnectionState::Live,
+            (false, Some(_)) => ConnectionState::Demo,
+            (false, None) => ConnectionState::Waiting,
+        }
+    }
+
+    fn demo_enabled(&self) -> bool {
+        self.force_demo || self.settings.demo_when_idle
+    }
+
+    /// Not connected to iRacing: run the demo when it's enabled, else show nothing.
+    fn enter_idle(&mut self, now: Instant) {
+        self.live = false;
+        let demo = self.demo_enabled();
+        self.session = demo.then(|| demo::demo_session(&self.sample));
+        self.on_session_changed();
+        self.feed.clear();
+        self.demo = demo.then(|| Demo::start(Arc::clone(&self.sample), &mut self.feed, now));
+    }
+
+    fn drain_telemetry(&mut self, now: Instant) {
+        let Some(reader) = self.reader.take() else { return };
+        for event in reader.drain() {
+            self.on_telemetry(event, now);
+        }
+        self.reader = Some(reader);
+    }
+
+    fn on_telemetry(&mut self, event: TelemetryEvent, now: Instant) {
+        match event {
+            TelemetryEvent::Connected => {
+                log::info!("Connected to iRacing");
+                self.live = true;
+                self.demo = None;
+                self.session = None;
+                self.feed.clear();
+                self.on_session_changed();
+            }
+            TelemetryEvent::Disconnected => {
+                log::info!("iRacing disconnected");
+                self.enter_idle(now);
+            }
+            TelemetryEvent::Session(info) if self.live && self.session.as_ref() != Some(&info) => {
+                self.session = Some(info);
+                self.on_session_changed();
+            }
+            TelemetryEvent::Frame(frame) if self.live => self.feed.push(&frame),
+            TelemetryEvent::Session(_) | TelemetryEvent::Frame(_) => {}
+        }
+    }
+
+    /// A new track or car: pick the matching saved lap (with auto reference on).
+    fn on_session_changed(&mut self) {
+        if self.settings.auto_reference
+            && let Some(session) = &self.session
+            && reference::auto_pick(&mut self.library, session, unix_now())
+        {
+            self.save_library();
+        }
+        self.refresh_reference();
+    }
+
+    fn refresh_reference(&mut self) {
+        let demo_lap = (!self.live && self.demo_enabled()).then_some(&self.sample);
+        if let Err(e) = self.reference.refresh(&self.library, &self.paths.laps, self.session.as_ref(), demo_lap) {
+            self.error = Some(format!("Couldn't load the saved lap: {e}"));
+        }
+        let lap = self.reference.lap().map(Arc::as_ref);
+        self.feed.set_track_length(reference::track_length(self.session.as_ref(), lap));
+    }
+
+    fn library_changed(&mut self) {
+        self.save_library();
+        self.refresh_reference();
+    }
+
+    fn save_library(&mut self) {
+        if let Err(e) = self.library.save(&self.paths.library) {
+            log::error!("Couldn't save {}: {e}", self.paths.library.display());
+            self.error = Some(format!("Couldn't save the lap library: {e}"));
+        }
+    }
+
+    /// Adds a Garage 61 CSV to the library and makes it the reference; either way the
+    /// settings window opens on the Reference tab to show the result.
+    fn import(&mut self, path: &Path) {
+        match self.library.import(&self.paths.laps, path, unix_now()) {
+            Ok((entry, lap)) => {
+                log::info!("New reference: {}", entry.original_name);
+                self.reference.set_saved(entry.id, lap);
+                self.settings.show_ref = true;
+                self.error = None;
+                self.library_changed();
+            }
+            Err(e) => self.error = Some(e.to_string()),
+        }
+        self.settings.tab = SettingsTab::Reference;
+        self.settings_open = true;
+    }
+
+    fn handle_desktop_events(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        for event in self.desktop.poll() {
+            log::debug!("{event:?}");
+            match event {
+                DesktopEvent::OpenSettings if self.settings_open => {
+                    ctx.send_viewport_cmd_to(settings_viewport(), ViewportCommand::Focus);
+                }
+                DesktopEvent::OpenSettings => self.settings_open = true,
+                DesktopEvent::SetLocked(locked) => self.settings.locked = locked,
+                DesktopEvent::ToggleLock => self.settings.locked = !self.settings.locked,
+                DesktopEvent::ResetPosition => reset_layout(ctx, frame),
+                DesktopEvent::Quit => ctx.send_viewport_cmd(ViewportCommand::Close),
+                DesktopEvent::Picked(path) => {
+                    self.browsing = false;
+                    if let Some(path) = path {
+                        self.import(&path);
+                    }
+                }
+            }
+        }
+    }
+
+    fn on_panel_action(&mut self, action: PanelAction, ctx: &egui::Context, frame: &eframe::Frame) {
+        match action {
+            PanelAction::Close => self.settings_open = false,
+            PanelAction::Browse => {
+                if !self.browsing {
+                    self.browsing = true;
+                    self.desktop.pick_csv(frame);
+                }
+            }
+            PanelAction::SelectLap(id) => {
+                self.library.set_active(Some(&id), unix_now());
+                self.library_changed();
+            }
+            PanelAction::RemoveLap(id) => {
+                if let Err(e) = self.library.remove(&self.paths.laps, &id) {
+                    self.error = Some(format!("Couldn't delete the lap's file: {e}"));
+                }
+                self.library_changed();
+            }
+            PanelAction::ClearReference => {
+                self.library.set_active(None, unix_now());
+                self.library_changed();
+            }
+            PanelAction::ResetLayout => reset_layout(ctx, frame),
+            PanelAction::ResetAll => self.settings = reset_all(&self.settings),
+            PanelAction::DismissError => self.error = None,
+        }
+    }
+
+    /// Applies what changed in the settings since last time (from the panel, tray or
+    /// hotkey) and schedules a save.
+    fn apply_settings(&mut self, ctx: &egui::Context, now: Instant) {
+        if self.settings == self.applied {
+            return;
+        }
+        let old = std::mem::replace(&mut self.applied, self.settings.clone());
+        let new = &self.applied;
+        if old.locked != new.locked {
+            ctx.send_viewport_cmd(ViewportCommand::MousePassthrough(new.locked));
+            self.desktop.set_locked(new.locked);
+        }
+        if old.update_hz != new.update_hz
+            && let Some(reader) = &self.reader
+        {
+            reader.set_wake_divisor(wake_divisor(new.update_hz));
+        }
+        if old.unlock_hotkey != new.unlock_hotkey
+            && let Err(e) = self.desktop.set_hotkey(&new.unlock_hotkey)
+        {
+            self.error = Some(e);
+        }
+        let restart_idle = old.demo_when_idle != new.demo_when_idle && !self.live && !self.force_demo;
+        let auto_on = new.auto_reference && !old.auto_reference;
+        if restart_idle {
+            self.enter_idle(now);
+        } else if auto_on {
+            self.on_session_changed();
+        }
+        self.save_due = Some(now + SAVE_DELAY);
+        ctx.request_repaint_after(SAVE_DELAY + FRAME);
+    }
+
+    fn save_when_due(&mut self, ctx: &egui::Context, now: Instant) {
+        match self.save_due {
+            Some(due) if now >= due => self.save_settings(),
+            Some(due) => ctx.request_repaint_after(due - now + FRAME),
+            None => {}
+        }
+    }
+
+    fn save_settings(&mut self) {
+        self.save_due = None;
+        if let Err(e) = self.settings.save(&self.paths.settings) {
+            log::error!("Couldn't save {}: {e}", self.paths.settings.display());
+        }
+    }
+
+    /// Remembers the window's position and size, and shows the size readout while it
+    /// changes.
+    fn track_window(&mut self, ctx: &egui::Context, now: Instant) {
+        let Some(outer) = ctx.input(|i| i.viewport().outer_rect) else { return };
+        let rect = geometry::to_window_rect(outer);
+        if self.settings.window.is_none_or(|w| geometry::moved(w, rect)) {
+            self.settings.window = Some(rect);
+        }
+        if self.last_window_size.is_some_and(|size| size != outer.size()) {
+            self.readout_until = Some(now + READOUT_HOLD);
+        }
+        self.last_window_size = Some(outer.size());
+        match self.readout_until {
+            Some(until) if now < until => ctx.request_repaint_after(until - now + FRAME),
+            Some(_) => self.readout_until = None,
+            None => {}
+        }
+    }
+
+    fn paint_overlay(&self, ui: &egui::Ui, window: Rect, now: Instant) -> Option<Intent> {
+        let (drawn, ref_badge) = match self.reference.status(self.session.as_ref()) {
+            Some(status) if self.settings.show_ref => reference::visibility(status),
+            _ => (false, None),
+        };
+        let reference = self.reference.lap().filter(|_| drawn).map(Arc::as_ref);
+        let lap_time = reference.map(Lap::lap_time_text);
+        let badges: Vec<&str> = [ref_badge, self.demo.as_ref().map(|_| "DEMO")].into_iter().flatten().collect();
+        let chrome = Chrome {
+            opacity: self.settings.bg_opacity / 100.0,
+            locked: self.settings.locked,
+            settings_open: self.settings_open,
+            reference_time: lap_time.as_deref(),
+            badges: &badges,
+            file_hover: ui.input(|i| !i.raw.hovered_files.is_empty()),
+            resizing: self.readout_until.is_some_and(|until| now < until),
+        };
+        let header = overlay::panel_and_header(ui, window, &chrome);
+
+        let content = overlay::content_rect(window);
+        let (behind, ahead) = self.settings.window_span();
+        let scene = GraphScene {
+            axis: self.settings.axis,
+            behind,
+            ahead,
+            track_length: self.feed.track_length(),
+            now: self.feed.now(),
+            live: self.feed.trace(),
+            reference,
+            ref_opacity: self.settings.ref_opacity / 100.0,
+            labels: LabelOptions {
+                show: self.settings.labels,
+                mode: self.settings.label_mode,
+                min: self.settings.label_min / 100.0,
+            },
+            header_height: HEADER_HEIGHT,
+            obstacles: &header.obstacles,
+            message: self.graph_message(),
+        };
+        graph::paint(&ui.painter().with_clip_rect(content), content, &scene);
+
+        let anchors = overlay::frame_controls(ui, window, &chrome);
+        header.intent.or(anchors)
+    }
+
+    fn graph_message(&self) -> Option<(&'static str, &'static str)> {
+        if !self.live && self.demo.is_none() {
+            Some(WAITING)
+        } else if self.reference.lap().is_none() {
+            Some(NO_REFERENCE)
+        } else {
+            None
+        }
+    }
+
+    fn on_intent(&mut self, intent: Intent, frame: &eframe::Frame) {
+        // egui's StartDrag/BeginResize need focus, which this window never takes.
+        let window = frame.winit_window();
+        let started = match intent {
+            Intent::ToggleSettings => {
+                self.settings_open = !self.settings_open;
+                return;
+            }
+            Intent::Move => window.map(|w| w.drag_window()),
+            Intent::Resize(dir) => window.map(|w| w.drag_resize_window(winit_direction(dir))),
+        };
+        if let Some(Err(e)) = started {
+            log::warn!("Couldn't start moving or resizing the overlay: {e}");
+        }
+    }
+
+    fn show_settings_window(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        let monitor = frame.winit_window().and_then(|w| w.current_monitor()).map(|m| monitor_rect(&m));
+        let max_height = monitor.map_or(f32::INFINITY, |m| m.height() - 16.0);
+        let size = vec2(settings_panel::WIDTH, self.settings_height.min(max_height));
+        let mut builder = ViewportBuilder::default()
+            .with_title("Overlay settings")
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_always_on_top()
+            .with_taskbar(false)
+            .with_resizable(false)
+            .with_drag_and_drop(true)
+            .with_inner_size(size);
+        let overlay_panel = ctx.input(|i| i.viewport().outer_rect).map(overlay::panel_rect);
+        if let (Some(panel), Some(monitor)) = (overlay_panel, monitor) {
+            builder = builder.with_position(geometry::settings_position(panel, size, monitor));
+        }
+
+        let status = self.reference.status(self.session.as_ref());
+        let connection = self.connection();
+        let out = ctx.show_viewport_immediate(settings_viewport(), builder, |ui, _| {
+            let (file_hover, dropped, close) = ui.input(|i| {
+                (
+                    !i.raw.hovered_files.is_empty(),
+                    i.raw.dropped_files.first().map(|f| f.path().to_path_buf()),
+                    i.key_pressed(egui::Key::Escape) || i.viewport().close_requested(),
+                )
+            });
+            let cx = PanelContext {
+                library: &self.library,
+                session: self.session.as_ref(),
+                reference: self.reference.lap().zip(status).map(|(lap, s)| (lap.as_ref(), s)),
+                active_id: self.reference.id(),
+                error: self.error.as_deref(),
+                connection,
+                browsing: self.browsing,
+                file_hover,
+            };
+            let panel = egui::CentralPanel::no_frame().show(ui, |ui| settings_panel::show(ui, &mut self.settings, &cx)).inner;
+            SettingsFrame { panel, dropped, close }
+        });
+
+        self.settings_height = out.panel.desired_height.max(1.0);
+        for action in out.panel.actions {
+            self.on_panel_action(action, ctx, frame);
+        }
+        if out.close {
+            self.settings_open = false;
+        }
+        if let Some(path) = out.dropped {
+            self.import(&path);
+        }
+    }
+
+    /// `--screenshot` / `--settings-screenshot`: quits once they're saved.
+    fn take_screenshots(&mut self, ctx: &egui::Context) {
+        let Some(mut shots) = self.screenshots.take() else { return };
+        if shots.update(ctx, self.settings_rect_px(ctx)) {
+            ctx.send_viewport_cmd(ViewportCommand::Close);
+        } else {
+            self.screenshots = Some(shots);
+        }
+    }
+
+    /// The settings window on screen, physical pixels.
+    fn settings_rect_px(&self, ctx: &egui::Context) -> Option<Rect> {
+        if !self.settings_open {
+            return None;
+        }
+        ctx.input_for(settings_viewport(), |i| {
+            let info = i.viewport();
+            info.outer_rect.map(|r| r * info.native_pixels_per_point.unwrap_or(1.0))
+        })
+    }
+}
+
+impl eframe::App for OverlayApp {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        let now = Instant::now();
+        platform::keep_no_activate(frame);
+        self.handle_desktop_events(ctx, frame);
+        self.drain_telemetry(now);
+        if let Some(demo) = &mut self.demo {
+            demo.advance(now, self.settings.update_hz, &mut self.feed);
+            ctx.request_repaint_after(Demo::repaint_delay(self.settings.update_hz));
+        }
+        self.apply_settings(ctx, now);
+        self.save_when_due(ctx, now);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        let now = Instant::now();
+        self.track_window(&ctx, now);
+        if let Some(intent) = self.paint_overlay(ui, ui.max_rect(), now) {
+            self.on_intent(intent, frame);
+        }
+        if let Some(path) = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf())) {
+            self.import(&path);
+        }
+        if self.settings_open {
+            self.show_settings_window(&ctx, frame);
+        }
+        self.apply_settings(&ctx, now);
+        self.take_screenshots(&ctx);
+    }
+
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0; 4]
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if self.save_due.is_some() {
+            self.save_settings();
+        }
+        if let Some(reader) = &mut self.reader {
+            reader.stop();
+        }
+    }
+}
+
+struct SettingsFrame {
+    panel: PanelOutput,
+    dropped: Option<PathBuf>,
+    close: bool,
+}
+
+fn settings_viewport() -> ViewportId {
+    ViewportId::from_hash_of("ito-settings")
+}
+
+/// The overlay window: undecorated, transparent, always on top, never focused, out of
+/// the taskbar, restored to where it was.
+fn overlay_viewport(settings: &Settings) -> ViewportBuilder {
+    let mut builder = ViewportBuilder::default()
+        .with_title(TITLE)
+        .with_app_id(APP_ID)
+        .with_decorations(false)
+        .with_transparent(true)
+        .with_always_on_top()
+        .with_taskbar(false)
+        .with_active(false)
+        .with_resizable(true)
+        .with_drag_and_drop(true)
+        .with_min_inner_size(geometry::min_window_size())
+        .with_inner_size(geometry::window_size(geometry::DEFAULT_PANEL))
+        .with_mouse_passthrough(settings.locked);
+    if let Some(w) = settings.window {
+        builder = builder.with_position(pos2(w.x, w.y)).with_inner_size(vec2(w.w, w.h));
+    }
+    if let Some(icon) = decode_icon(include_bytes!("../assets/icon/icon-256.png")) {
+        builder = builder.with_icon(egui::IconData { rgba: icon.pixels, width: icon.width, height: icon.height });
+    }
+    builder
+}
+
+fn decode_icon(bytes: &[u8]) -> Option<capture::Rgba> {
+    capture::decode_png(bytes).map_err(|e| log::warn!("Couldn't decode an icon: {e}")).ok()
+}
+
+/// Before the first frame: no Windows 11 border shadow, the transparency fix, no
+/// focus, and the default position when there's no reachable saved one.
+fn prepare_window(window: &Window, saved: Option<WindowRect>) {
+    use winit::platform::windows::WindowExtWindows;
+    window.set_undecorated_shadow(false);
+    platform::fix_transparency(window);
+    platform::keep_no_activate(window);
+    let monitors: Vec<Rect> = window.available_monitors().map(|m| monitor_rect(&m)).collect();
+    if saved.is_some_and(|w| geometry::reachable(geometry::from_window_rect(w), &monitors)) {
+        return;
+    }
+    let Some(primary) = window.primary_monitor() else { return };
+    let rect = geometry::default_window(monitor_rect(&primary));
+    let scale = primary.scale_factor();
+    let px = |v: f32| (f64::from(v) * scale).round();
+    window.set_outer_position(PhysicalPosition::new(px(rect.min.x), px(rect.min.y)));
+    let _ = window.request_inner_size(PhysicalSize::new(px(rect.width()), px(rect.height())));
+}
+
+/// Back to the default size, centred low on the monitor the overlay is on.
+fn reset_layout(ctx: &egui::Context, frame: &eframe::Frame) {
+    let Some(window) = frame.winit_window() else { return };
+    let Some(monitor) = window.current_monitor().or_else(|| window.primary_monitor()) else { return };
+    let rect = geometry::default_window(monitor_rect(&monitor));
+    ctx.send_viewport_cmd(ViewportCommand::OuterPosition(rect.min));
+    ctx.send_viewport_cmd(ViewportCommand::InnerSize(rect.size()));
+}
+
+/// A monitor's area in points.
+fn monitor_rect(monitor: &MonitorHandle) -> Rect {
+    let scale = monitor.scale_factor() as f32;
+    let (pos, size) = (monitor.position(), monitor.size());
+    Rect::from_min_size(pos2(pos.x as f32, pos.y as f32) / scale, vec2(size.width as f32, size.height as f32) / scale)
+}
+
+/// Defaults, except the window, the hotkey and the open tab.
+fn reset_all(settings: &Settings) -> Settings {
+    Settings {
+        window: settings.window,
+        unlock_hotkey: settings.unlock_hotkey.clone(),
+        tab: settings.tab,
+        ..Settings::default()
+    }
+}
+
+fn spawn_reader(ctx: &egui::Context, update_hz: u32) -> IracingReader {
+    let ctx = ctx.clone();
+    // A 1 ms delay (not `request_repaint`) gives exactly one repaint per frame.
+    let reader = IracingReader::spawn(Box::new(move || ctx.request_repaint_after(Duration::from_millis(1))));
+    reader.set_wake_divisor(wake_divisor(update_hz));
+    reader
+}
+
+/// iRacing sends 60 frames a second; wake the UI on every `n`th.
+fn wake_divisor(update_hz: u32) -> u32 {
+    (60 / update_hz.max(1)).max(1)
+}
+
+fn winit_direction(dir: egui::ResizeDirection) -> winit::window::ResizeDirection {
+    use egui::ResizeDirection as E;
+    use winit::window::ResizeDirection as W;
+    match dir {
+        E::North => W::North,
+        E::South => W::South,
+        E::East => W::East,
+        E::West => W::West,
+        E::NorthEast => W::NorthEast,
+        E::SouthEast => W::SouthEast,
+        E::NorthWest => W::NorthWest,
+        E::SouthWest => W::SouthWest,
+    }
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::Axis;
+
+    #[test]
+    fn reset_all_keeps_window_hotkey_and_tab() {
+        let s = Settings {
+            bg_opacity: 20.0,
+            axis: Axis::Time,
+            locked: true,
+            unlock_hotkey: "Ctrl+Alt+L".into(),
+            tab: SettingsTab::Timing,
+            window: Some(WindowRect { x: 1.0, y: 2.0, w: 300.0, h: 120.0 }),
+            ..Default::default()
+        };
+        let r = reset_all(&s);
+        assert_eq!((r.window, r.unlock_hotkey.as_str(), r.tab), (s.window, "Ctrl+Alt+L", SettingsTab::Timing));
+        assert_eq!((r.bg_opacity, r.axis, r.locked), (80.0, Axis::Distance, false));
+    }
+
+    #[test]
+    fn wake_divisor_follows_update_rate() {
+        assert_eq!(wake_divisor(60), 1);
+        assert_eq!(wake_divisor(30), 2);
+    }
+
+    #[test]
+    fn data_dir_defaults_to_the_app_folder() {
+        assert_eq!(LaunchOptions::default().data_dir(), settings::app_dir());
+        let custom = LaunchOptions { data_dir: Some("x".into()), ..Default::default() };
+        assert_eq!(custom.data_dir(), PathBuf::from("x"));
+    }
 }
