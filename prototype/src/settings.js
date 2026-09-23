@@ -36,16 +36,20 @@
   const ICON_WARN = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.8 19.5h18.4L12 4zM12 10v4.2M12 17v.2"/></svg>';
 
   // reference: { session, get(), load(file) → Promise, remove() }
-  function initSettingsPanel({ panel, gear, overlay, settings, reference, onResetLayout }) {
+  // others: more windows with their own gear, [{ gear, overlay, tab }]; the panel opens
+  // beside whichever window's gear opened it, on that window's tab.
+  function initSettingsPanel({ panel, gear, overlay, others = [], settings, reference, onResetLayout }) {
     const $ = (s) => panel.querySelector(s);
     const $$ = (s) => [...panel.querySelectorAll(s)];
     const isOpen = () => !panel.hidden;
+    const owners = [{ gear, overlay }, ...others];
+    let owner = owners[0];
 
     // ---------- open, close, placement ----------
     // Sits outside the overlay (below, else above, else beside) so changes stay visible.
     function position() {
       if (!isOpen()) return;
-      const o = overlay.getBoundingClientRect();
+      const o = (owner.overlay.hidden ? owners[0] : owner).overlay.getBoundingClientRect();
       const pw = panel.offsetWidth, ph = panel.offsetHeight;
       const vw = root.innerWidth, vh = root.innerHeight, gap = 10, pad = 8;
       let left = Math.max(pad, Math.min(vw - pw - pad, o.right - pw));
@@ -62,9 +66,11 @@
       panel.style.setProperty("--pop-from", from);
     }
 
-    function open(tab) {
+    function open(tab, from = owners[0]) {
+      if (owner !== from) owner.gear.setAttribute("aria-expanded", "false");
+      owner = from;
       panel.hidden = false;
-      gear.setAttribute("aria-expanded", "true");
+      owner.gear.setAttribute("aria-expanded", "true");
       selectTab(tab || settings.v.tab || "display");
       sync();
       position();
@@ -72,21 +78,24 @@
     function close() {
       if (!isOpen()) return;
       panel.hidden = true;
-      gear.setAttribute("aria-expanded", "false");
+      owner.gear.setAttribute("aria-expanded", "false");
     }
 
-    gear.addEventListener("click", () => (isOpen() ? close() : open()));
-    $("[data-close]").addEventListener("click", () => { close(); gear.focus(); });
+    for (const o of owners) {
+      o.gear.addEventListener("click", () => (isOpen() && owner === o ? close() : open(o.tab, o)));
+    }
+    $("[data-close]").addEventListener("click", () => { close(); owner.gear.focus(); });
     document.addEventListener("pointerdown", (e) => {
-      if (isOpen() && !panel.contains(e.target) && !overlay.contains(e.target)) close();
+      if (isOpen() && !panel.contains(e.target) && !owners.some((o) => o.overlay.contains(e.target))) close();
     });
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && isOpen()) { close(); gear.focus(); }
+      if (e.key === "Escape" && isOpen()) { close(); owner.gear.focus(); }
     });
     root.addEventListener("resize", position);
 
     // ---------- tabs ----------
     function selectTab(name) {
+      if (!$$("[role=tab]").some((t) => t.dataset.tab === name)) name = "display"; // e.g. a renamed tab
       for (const t of $$("[role=tab]")) {
         const on = t.dataset.tab === name;
         t.setAttribute("aria-selected", String(on));
@@ -125,9 +134,10 @@
     $("#resetAll").addEventListener("click", () => settings.reset(["frame", "tab"]));
     $("#resetLayout").addEventListener("click", () => onResetLayout && onResetLayout());
 
-    function format(k, v, unit) {
-      if (k.startsWith("ahead") && v === 0) return "Off";
-      return `${Number.isInteger(v) ? v : v.toFixed(1)}${unit || ""}`;
+    function format(k, v, inp) {
+      if ((k.startsWith("ahead") || k === "cueEarly") && v === 0) return "Off";
+      const d = inp.dataset.decimals;
+      return `${inp.dataset.prefix || ""}${d ? v.toFixed(Number(d)) : Number.isInteger(v) ? v : v.toFixed(1)}${inp.dataset.unit || ""}`;
     }
 
     function sync() {
@@ -137,7 +147,7 @@
         inp.value = v[k];
         inp.style.setProperty("--fill", `${((v[k] - inp.min) / (inp.max - inp.min)) * 100}%`);
         const out = panel.querySelector(`output[data-for="${k}"]`);
-        if (out) out.textContent = format(k, v[k], inp.dataset.unit);
+        if (out) out.textContent = format(k, v[k], inp);
       }
       for (const seg of $$(".seg[data-setting]")) {
         for (const b of seg.querySelectorAll("button")) {

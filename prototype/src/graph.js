@@ -81,7 +81,8 @@
     }
 
     // sc: { axis, behind, ahead, L, now, live, ref, showRef, refOpacity,
-    //       labels: { show, mode, min }, headerH, obstacles: [{x,y,w,h}] }
+    //       labels: { show, mode, min }, headerH, obstacles: [{x,y,w,h}],
+    //       cue: brake point state from BrakeCue.update(), or null }
     render(sc) {
       const { ctx, w, h } = this;
       ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
@@ -140,6 +141,9 @@
       this.strokeLine(live.v, live.t, RGB.throttle, X, Y);
       this.strokeLine(live.v, live.b, RGB.brake, X, Y);
       ctx.restore();
+
+      // Brake points: a mark at each reference brake-on, your gap to it underlined.
+      if (ref && sc.cue) this.drawBrakePoints(sc, ref, fr, X, Y, plot);
 
       // Car position: cursor, playhead and current-value dots.
       ctx.strokeStyle = "rgba(255, 255, 255, 0.92)";
@@ -224,6 +228,46 @@
           ctx.font = `500 10.5px ${FONT}`;
           ctx.fillText("Drop a Garage 61 CSV here, or ⚙ → Reference", mid, plot.y + plot.h / 2 + 8);
         }
+      }
+    }
+
+    drawBrakePoints(sc, ref, fr, X, Y, plot) {
+      const { ctx } = this;
+      const lo = -sc.behind, hi = sc.ahead;
+      const refX = (m, k) => m * fr.period + fr.at(ref.zones[k].start) - fr.center;
+      const base = Math.round(Y(0)) + 0.5;
+
+      const xs = [];
+      for (let m = Math.floor((fr.center + lo) / fr.period); m <= Math.floor((fr.center + hi) / fr.period); m++) {
+        for (const k of sc.cue.cueZones) {
+          const v = refX(m, k);
+          if (v >= lo && v <= hi) xs.push(Math.round(X(v)) + 0.5);
+        }
+      }
+      ctx.save();
+      ctx.setLineDash([2, 3]);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = `rgba(${RGB.brake}, 0.5)`;
+      for (const x of xs) { ctx.beginPath(); ctx.moveTo(x, plot.y + 3); ctx.lineTo(x, base); ctx.stroke(); }
+      ctx.restore();
+      ctx.fillStyle = `rgb(${RGB.brake})`;
+      for (const x of xs) {
+        ctx.beginPath(); ctx.moveTo(x - 3.5, plot.y - 1); ctx.lineTo(x + 3.5, plot.y - 1); ctx.lineTo(x, plot.y + 3.5); ctx.closePath(); ctx.fill();
+      }
+
+      // Under the baseline, from the reference brake-on to yours, in the grade's colour.
+      const y = base + 2;
+      for (const mk of sc.cue.marks) {
+        const v0 = refX(mk.m, mk.k);
+        const v1 = sc.axis === "distance" ? mk.onD - sc.now.D : mk.onT - sc.now.t;
+        if (Math.max(v0, v1) < lo || Math.min(v0, v1) > hi) continue;
+        const x0 = X(v0), x1 = X(v1);
+        ctx.strokeStyle = `rgb(${ITO.GRADES[mk.grade].rgb})`;
+        ctx.lineCap = "butt";
+        ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(x1, y - 4); ctx.lineTo(x1, y + 2); ctx.stroke();
       }
     }
 

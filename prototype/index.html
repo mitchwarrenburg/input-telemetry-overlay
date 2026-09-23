@@ -36,6 +36,10 @@
     </div>
   </section>
 
+  <!-- ================= Brake point countdown ================= -->
+  <!-- Its own window, so it can sit near the driver's line of sight. Filled by brake-cue.js. -->
+  <section id="cue" aria-label="Brake point countdown"></section>
+
   <!-- ================= Settings ================= -->
   <div class="ito-settings" id="settings" role="dialog" aria-label="Overlay settings" hidden>
     <div class="set-head">
@@ -47,7 +51,7 @@
 
     <div class="set-tabs" role="tablist">
       <button type="button" role="tab" id="tab-display" aria-controls="panel-display" data-tab="display">Display</button>
-      <button type="button" role="tab" id="tab-labels" aria-controls="panel-labels" data-tab="labels">Labels</button>
+      <button type="button" role="tab" id="tab-brakes" aria-controls="panel-brakes" data-tab="brakes">Brakes</button>
       <button type="button" role="tab" id="tab-timing" aria-controls="panel-timing" data-tab="timing">Timing</button>
       <button type="button" role="tab" id="tab-reference" aria-controls="panel-reference" data-tab="reference">Reference</button>
     </div>
@@ -73,8 +77,44 @@
       <button type="button" class="btn" id="resetLayout">Reset size &amp; position</button>
     </div>
 
-    <!-- Labels -->
-    <div class="set-panel" role="tabpanel" id="panel-labels" aria-labelledby="tab-labels" hidden>
+    <!-- Brakes: the brake point countdown, its timing grade, and brake peak labels -->
+    <div class="set-panel" role="tabpanel" id="panel-brakes" aria-labelledby="tab-brakes" hidden>
+      <div class="set-section">Brake point countdown</div>
+      <label class="set-toggle">
+        <span>Countdown window<small>3-2-1-BRAKE into each reference brake point</small></span>
+        <input type="checkbox" class="switch" data-setting="cueOn">
+      </label>
+      <label class="set-row" data-needs="cueOn">
+        <span class="row-head"><span>Countdown <small>3 counts</small></span><output data-for="cueLead"></output></span>
+        <input type="range" min="1.5" max="4.5" step="0.5" data-setting="cueLead" data-unit=" s">
+      </label>
+      <label class="set-row" data-needs="cueOn">
+        <span class="row-head"><span>Cue early by <small>reaction allowance</small></span><output data-for="cueEarly"></output></span>
+        <input type="range" min="0" max="0.3" step="0.05" data-setting="cueEarly" data-unit=" s" data-decimals="2">
+      </label>
+      <label class="set-row" data-needs="cueOn">
+        <span class="row-head"><span>Skip zones below <small>reference peak</small></span><output data-for="cueMin"></output></span>
+        <input type="range" min="0" max="50" step="1" data-setting="cueMin" data-unit="%">
+      </label>
+      <label class="set-toggle" data-needs="cueOn">
+        <span>Beeps<small>One per count, a long one on BRAKE</small></span>
+        <input type="checkbox" class="switch" data-setting="cueBeep">
+      </label>
+
+      <hr class="set-divider">
+      <div class="set-section">Brake timing</div>
+      <label class="set-row">
+        <span class="row-head"><span>Good within <small>of the reference</small></span><output data-for="cueTol"></output></span>
+        <input type="range" min="0.02" max="0.2" step="0.01" data-setting="cueTol" data-unit=" s" data-decimals="2" data-prefix="±">
+      </label>
+      <div class="grade-key" id="gradeKey"></div>
+      <label class="set-toggle">
+        <span>Brake points on the graph<small>Marks each one and underlines your gap to it</small></span>
+        <input type="checkbox" class="switch" data-setting="cueGraph">
+      </label>
+
+      <hr class="set-divider">
+      <div class="set-section">Peak labels</div>
       <label class="set-toggle">
         <span>Brake peak labels<small>Max % reached in each braking zone</small></span>
         <input type="checkbox" class="switch" data-setting="labels">
@@ -180,19 +220,21 @@
     <span class="harness-tag">Prototype</span>
     <span class="harness-text">Simulated inputs · <b id="hzTrack">–</b> · Lap <b id="hzLap">1</b> · <b id="hzClock">0:00.0</b></span>
     <button type="button" class="icon-btn" id="playBtn" aria-label="Pause"></button>
+    <button type="button" class="btn btn-sm" id="nextZoneBtn" title="Jump to just before the next brake point countdown (N)">Next zone ⏭</button>
     <div class="seg seg-sm" id="speedSeg" role="group" aria-label="Playback speed">
       <button type="button" data-speed="0.5">½×</button>
       <button type="button" data-speed="1" aria-pressed="true">1×</button>
       <button type="button" data-speed="2">2×</button>
     </div>
   </div>
-  <p class="harness-hint">Hover the overlay to move or resize it · <b>⚙</b> opens settings · drop a Garage 61 CSV on it to change the reference · <b>Space</b> pauses</p>
+  <p class="harness-hint">Hover the overlay to move or resize it · <b>⚙</b> opens settings · drop a Garage 61 CSV on it to change the reference · <b>Space</b> pauses · <b>N</b> jumps to the next brake zone</p>
 
   <script src="data/sample-lap.js"></script>
   <script src="src/lap.js"></script>
   <script src="src/sim.js"></script>
   <script src="src/live-trace.js"></script>
   <script src="src/graph.js"></script>
+  <script src="src/brake-cue.js"></script>
   <script src="src/frame.js"></script>
   <script src="src/settings.js"></script>
   <script src="src/stage.js"></script>

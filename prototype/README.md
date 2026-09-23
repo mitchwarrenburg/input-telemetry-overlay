@@ -16,6 +16,14 @@ serve the folder (`python -m http.server 8617`) and visit `http://localhost:8617
 - **Brake peak labels:** the highest % in each braking zone. Solid red pills mark your
   peaks and update while you're still on the brake. Outlined pills mark the reference
   peaks. Labels move out of each other's way and drop out when there's no room.
+- **Brake point countdown:** a second window that counts 3-2-1-BRAKE into each of the
+  reference lap's brake points, with a bar filling in step and the zone's target peak
+  pressure beside it. When you brake, it grades your timing against the reference brake
+  point (very early, early, good, late, very late, or no brake) in seconds and metres, and
+  keeps a strip of pips with your grade in every zone. With **Brake points on the graph**
+  on, the graph marks each reference brake point (red ▼) and underlines your gap to it.
+  [`brake-cue.html`](brake-cue.html) is the design board: every state, the grades, sizes
+  and the behaviour spec.
 - **Resizing:** hover the overlay to show 8 anchors (corners and edges). Drag one to
   resize, or drag the header to move the overlay. Size and position are saved.
 - **Gear (top right):** opens the settings. The panel sits outside the overlay so you can
@@ -24,7 +32,7 @@ serve the folder (`python -m http.server 8617`) and visit `http://localhost:8617
 | Tab | Settings |
 |---|---|
 | Display | Background opacity, reference-fill opacity, lock size and position, reset layout |
-| Labels | Brake peak labels on or off; which traces get them (live, reference or both); minimum peak |
+| Brakes | Brake point countdown on or off, countdown length, cue early by (reaction allowance), skip zones below a peak, beeps; the "good" timing window; brake points on the graph; brake peak labels on or off, which traces get them (live, reference or both), minimum peak |
 | Timing | X-axis in distance or time; history behind the car; look-ahead; update rate (30 or 60 Hz) |
 | Reference | Loaded lap card (driver, car, track and lap time from the file name, plus a warning if it doesn't match the session); drop or browse for a CSV; show or hide the reference |
 
@@ -39,11 +47,13 @@ shortens to "THR / BRK" below 330 px, and the x-axis labels hide below 118 px ta
 | `src/styles.css` | Design tokens and all styling |
 | `src/graph.js` | Canvas renderer: fills, lines, cursor, axes, S/F marker, peak labels |
 | `src/lap.js` | Garage 61 CSV parser and lap model (brake zones, `LapDistPct` lookups) |
-| `src/live-trace.js` | Rolling buffer of live samples and brake-event peaks |
+| `src/live-trace.js` | Rolling buffer of live samples and brake events (brake-on point and peak) |
+| `src/brake-cue.js` | Brake point countdown: zone timing and grading, the window's renderer, beeps |
+| `brake-cue.html`, `src/board.js` | Design board for the brake point countdown |
 | `src/frame.js` | Move and 8-anchor resize |
 | `src/settings.js` | Persisted settings store and the settings popover |
 | `src/main.js` | Wiring and render loop |
-| `src/sim.js`, `src/stage.js` | **Prototype only:** simulated driver and the track backdrop |
+| `src/sim.js`, `src/stage.js` | **Prototype only:** simulated driver and the track backdrop. The harness's **Next zone** button (or **N**) jumps to just before the next countdown |
 | `data/sample-lap.js` | The provided Garage 61 lap (4 columns), embedded so `file://` works |
 
 ## Connecting to iRacing later

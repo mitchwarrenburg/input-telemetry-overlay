@@ -16,6 +16,15 @@
     aheadS: 6,
     hz: 60,
     showRef: true,
+    // Brake point countdown
+    cueOn: true,
+    cueLead: 3, // s for the three counts
+    cueEarly: 0, // s: show BRAKE this much before the reference brake point
+    cueMin: 15, // %: zones with a lower reference peak get no countdown
+    cueBeep: false,
+    cueTol: 0.08, // s: ± "good" window; "very" early/late past 3×
+    cueGraph: true,
+    cueFrame: null,
     tab: "display",
     frame: null,
   };
@@ -68,7 +77,32 @@
     onCommit: (r) => settings.set("frame", r),
   });
   frame.set(settings.v.frame || defaultFrame());
-  window.addEventListener("resize", () => frame.set(frame.get()));
+
+  // ---------- brake point countdown (its own window) ----------
+  const cueEl = document.getElementById("cue");
+  const cueView = new ITO.BrakeCueView(cueEl);
+  const cue = new ITO.BrakeCue();
+  const beeper = new ITO.CueBeeper();
+  let cueState = null;
+
+  // Default: centred just above the graph.
+  function defaultCueFrame() {
+    const o = frame.get(), w = 360, h = 96;
+    const y = o.y - h - 12 >= 8 ? o.y - h - 12 : o.y + o.h + 12;
+    return { x: Math.round(o.x + (o.w - w) / 2), y, w, h };
+  }
+  const cueFrame = ITO.attachFrame(cueEl, {
+    handle: cueView.handle,
+    readout: cueView.readout,
+    minW: 230,
+    minH: 84,
+    onChange: () => panel && panel.position(),
+    onCommit: (r) => settings.set("cueFrame", r),
+  });
+  cueFrame.set(settings.v.cueFrame || defaultCueFrame());
+  cueView.close.addEventListener("click", () => settings.set("cueOn", false));
+
+  window.addEventListener("resize", () => { frame.set(frame.get()); cueFrame.set(cueFrame.get()); });
 
   // Header items the peak labels must steer around (overlay-local px).
   function measureHeader() {
@@ -97,21 +131,44 @@
 
   function applyAppearance() {
     const v = settings.v;
-    overlay.style.setProperty("--bg-alpha", v.bgOpacity / 100);
-    overlay.classList.toggle("is-locked", v.locked);
+    for (const el of [overlay, cueEl]) {
+      el.style.setProperty("--bg-alpha", v.bgOpacity / 100);
+      el.classList.toggle("is-locked", v.locked);
+    }
+    cueEl.hidden = !v.cueOn;
     document.getElementById("legendRef").hidden = !reference || !v.showRef;
     document.getElementById("legendRefTime").textContent = reference ? reference.lapTimeText : "–";
     measureHeader();
   }
   settings.on((k) => {
     applyAppearance();
-    if (k !== "frame") dirty = true;
+    if (k === "cueBeep" && settings.v.cueBeep) beeper.enable(); // a click, so audio may start
+    if (k === "cueTol" || k === "*") renderGradeKey();
+    if (k !== "frame" && k !== "cueFrame") dirty = true;
   });
+
+  // Grade key in Settings → Brakes, with the thresholds for the current window.
+  function renderGradeKey() {
+    const t = settings.v.cueTol, f = (x) => x.toFixed(2);
+    const rows = [
+      ["veryEarly", `over ${f(3 * t)} s early`],
+      ["early", `${f(t)}–${f(3 * t)} s early`],
+      ["good", `within ±${f(t)} s`],
+      ["late", `${f(t)}–${f(3 * t)} s late`],
+      ["veryLate", `over ${f(3 * t)} s late`],
+      ["none", "no brake where the reference brakes"],
+    ];
+    document.getElementById("gradeKey").innerHTML = rows
+      .map(([g, text]) => `<span><i class="cue-chip" style="--g: ${ITO.GRADES[g].rgb}">${ITO.GRADES[g].chip}</i>${text}</span>`)
+      .join("");
+  }
+  renderGradeKey();
 
   panel = ITO.initSettingsPanel({
     panel: document.getElementById("settings"),
     gear: document.getElementById("gear"),
     overlay,
+    others: [{ gear: cueView.gear, overlay: cueEl, tab: "brakes" }],
     settings,
     reference: {
       session,
@@ -120,6 +177,7 @@
         if (!/\.csv$/i.test(file.name)) throw new Error("That isn't a CSV. In Garage 61, open the lap and export it as CSV.");
         reference = ITO.parseLapCsv(await file.text(), file.name);
         storeReference(reference);
+        cue.setReference(reference, session.trackLength);
         settings.set("showRef", true);
         applyAppearance();
         panel.sync();
@@ -128,12 +186,16 @@
       remove() {
         reference = null;
         storeReference(null);
+        cue.setReference(null, session.trackLength);
         applyAppearance();
         panel.sync();
         dirty = true;
       },
     },
-    onResetLayout: () => settings.set("frame", frame.set(defaultFrame())),
+    onResetLayout: () => {
+      settings.set("frame", frame.set(defaultFrame()));
+      settings.set("cueFrame", cueFrame.set(defaultCueFrame()));
+    },
   });
   applyAppearance();
 
@@ -144,6 +206,20 @@
   for (let s = sim.step(1 / 60); ; s = sim.step(1 / 60)) {
     live.push(s);
     if (s.D >= 3800) break;
+  }
+  cue.setReference(reference, session.trackLength);
+
+  const cueCfg = () => {
+    const v = settings.v;
+    return { lead: v.cueLead, early: v.cueEarly, min: v.cueMin / 100, tol: v.cueTol };
+  };
+  function updateCue() {
+    const prev = cueState;
+    cueState = cue.update(live.last, live, cueCfg());
+    if (settings.v.cueOn) {
+      cueView.render(cueState);
+      if (settings.v.cueBeep) beeper.cue(prev, cueState);
+    }
   }
 
   function draw() {
@@ -160,6 +236,7 @@
       showRef: v.showRef,
       refOpacity: v.refOpacity / 100,
       labels: { show: v.labels, mode: v.labelMode, min: v.labelMin / 100 },
+      cue: v.cueGraph && cueState && cueState.cueZones ? cueState : null,
       headerH: HEADER_H,
       obstacles,
     });
@@ -177,12 +254,17 @@
       while (acc >= step && n < 240) { live.push(sim.step(step)); acc -= step; n++; }
       if (n) {
         const s = live.last;
+        updateCue();
         live.prune(s.t - 25, s.D - 1600); // widest window any setting can show
         updateHarness();
         dirty = true;
       }
     }
-    if (dirty) { dirty = false; draw(); }
+    if (dirty) {
+      dirty = false;
+      if (!playing) updateCue(); // settings changed while paused
+      draw();
+    }
     requestAnimationFrame(tick);
   }
 
@@ -198,11 +280,41 @@
   }
   playBtn.addEventListener("click", () => setPlaying(!playing));
   document.addEventListener("keydown", (e) => {
-    if (e.code === "Space" && !e.target.closest("input, button, [role=button], [role=tab]")) {
+    if (e.target.closest("input, button, [role=button], [role=tab]")) return;
+    if (e.code === "Space") {
       e.preventDefault();
       setPlaying(!playing);
-    }
+    } else if (e.code === "KeyN") skipToNextZone();
   });
+
+  // Fast-forward to a second before the next countdown starts.
+  function skipToNextZone() {
+    const target = cue.ref && cue.nextArmAt(live.last, cueCfg());
+    if (target == null) return;
+    for (let i = 0; i < 60 * 200; i++) {
+      const s = sim.step(1 / 60);
+      live.push(s);
+      if (i % 600 === 599) updateCue(); // grade zones on the way past
+      if (cue.clock(s.lap, s.pct) >= target) break;
+    }
+    updateCue();
+    live.prune(live.last.t - 25, live.last.D - 1600);
+    updateHarness();
+    dirty = true;
+  }
+  document.getElementById("nextZoneBtn").addEventListener("click", skipToNextZone);
+
+  // Step the sim by `sec` and redraw now (from the console, e.g. to catch a state).
+  function advance(sec) {
+    for (let i = 0; i < Math.round(sec * 60); i++) {
+      live.push(sim.step(1 / 60));
+      updateCue();
+    }
+    live.prune(live.last.t - 25, live.last.D - 1600);
+    updateHarness();
+    draw();
+    return cueState;
+  }
   const speedSeg = document.getElementById("speedSeg");
   speedSeg.addEventListener("click", (e) => {
     const b = e.target.closest("button[data-speed]");
@@ -218,9 +330,14 @@
   }
 
   setPlaying(true);
+  updateCue();
   updateHarness();
   requestAnimationFrame(tick);
 
   // Handy from the dev console.
-  window.ITO_APP = { settings, live, sim, graph, panel, setPlaying, get reference() { return reference; } };
+  window.ITO_APP = {
+    settings, live, sim, graph, panel, setPlaying, cue, cueView, skipToNextZone, advance,
+    get reference() { return reference; },
+    get cueState() { return cueState; },
+  };
 })();

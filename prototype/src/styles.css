@@ -223,6 +223,190 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 .ito-drop svg { color: var(--accent); }
 .ito-overlay.is-dragover .ito-drop { opacity: 1; }
 
+/* ============ Brake point countdown ============ */
+/* A second overlay window: 3-2-1-BRAKE into each reference brake point, the zone's
+   target peak, and how your brake timing compared. Grade colours are "r, g, b" so
+   chips and pips can tint them. */
+.ito-cue {
+  --brake-ink: #e0301f; /* solid red behind white text (4.5:1) */
+  width: 360px;
+  height: 96px;
+}
+.cue-head { gap: 10px; padding-right: 3px; }
+.cue-next {
+  font: 600 10.5px/1 var(--font-hud);
+  letter-spacing: 0.04em;
+  color: var(--hud-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.cue-pips { display: flex; align-items: center; gap: 3px; margin-left: auto; }
+.cue-pip {
+  width: 9px;
+  height: 5px;
+  border-radius: 1.5px;
+  background: rgba(255, 255, 255, 0.14);
+}
+.cue-pip.is-graded { background: rgb(var(--g)); }
+.cue-pip.is-stale { opacity: 0.35; }
+.cue-pip.is-current { opacity: 1; box-shadow: 0 0 0 1.5px rgba(var(--hud-surface), 1), 0 0 0 2.5px var(--hud-text); }
+.cue-tools { display: flex; gap: 1px; }
+.cue-tools .ito-gear { margin-left: 0; }
+
+.cue-body {
+  --fill: 0;
+  --join: 0;
+  --live: 0;
+  --target: 0;
+  --peak: -1;
+  position: absolute;
+  inset: 27px 10px 8px;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 7px;
+}
+.cue-main { display: flex; gap: 3px; min-height: 0; }
+
+/* Bar: three one-count segments, filling toward the cap. */
+.cue-track {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 5px 1px 1px 5px;
+  background:
+    linear-gradient(90deg, transparent 66.667%, rgba(255, 61, 46, 0.1) 66.667%),
+    rgba(255, 255, 255, 0.07);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.cue-fill, .cue-join { position: absolute; top: 0; bottom: 0; }
+.cue-fill {
+  left: calc(var(--join) * 100%);
+  width: calc((var(--fill) - var(--join)) * 100%);
+  background: rgba(232, 239, 238, 0.92);
+}
+/* The part a short straight skipped. */
+.cue-join {
+  left: 0;
+  width: calc(var(--join) * 100%);
+  background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.16) 0 2px, transparent 2px 6px);
+}
+.cue-tick { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: rgba(var(--hud-surface), 0.75); }
+.cue-msg {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font: 600 clamp(10px, 11cqh, 13px)/1 var(--font-hud);
+  letter-spacing: 0.08em;
+  white-space: pre;
+  color: var(--hud-muted);
+  font-variant-numeric: tabular-nums;
+}
+.cue-msg:empty { display: none; }
+
+/* Cap: the count (3, 2, 1), then BRAKE. */
+.cue-cap {
+  flex: none;
+  width: clamp(58px, 17cqw, 110px);
+  display: grid;
+  place-items: center;
+  border-radius: 1px 5px 5px 1px;
+  box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.14);
+  color: rgba(232, 239, 238, 0.4);
+  font: 700 clamp(12px, 15cqh, 20px)/1 var(--font-hud);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.cue-cap span { display: block; }
+
+.cue-body[data-mode="countdown"] .cue-cap { color: var(--hud-text); box-shadow: inset 0 0 0 1.5px rgba(232, 239, 238, 0.55); }
+.cue-body[data-mode="countdown"] .cue-cap span { font-size: clamp(22px, 34cqh, 44px); letter-spacing: 0; font-variant-numeric: tabular-nums; }
+/* Each count pops in; alternating names restart the animation on every change. */
+.cue-body[data-beat="3"] .cue-cap span, .cue-body[data-beat="1"] .cue-cap span { animation: cue-pop-a 0.22s ease-out; }
+.cue-body[data-beat="2"] .cue-cap span { animation: cue-pop-b 0.22s ease-out; }
+@keyframes cue-pop-a { from { transform: scale(1.35); opacity: 0.4; } }
+@keyframes cue-pop-b { from { transform: scale(1.35); opacity: 0.4; } }
+
+/* Last count goes red; BRAKE is solid red and flashes. */
+.cue-body[data-beat="1"] .cue-fill { background: var(--brake); }
+.cue-body[data-beat="1"] .cue-cap { color: #fff; box-shadow: inset 0 0 0 1.5px var(--brake); background: rgba(255, 61, 46, 0.18); }
+.cue-body[data-mode="brake"] .cue-fill,
+.cue-body[data-mode="braking"] .cue-fill { background: var(--brake); }
+.cue-body[data-mode="brake"] .cue-cap,
+.cue-body[data-mode="braking"] .cue-cap { color: #fff; background: var(--brake-ink); box-shadow: none; }
+.cue-body[data-mode="brake"] .cue-cap { animation: cue-flash 0.2s ease-in-out 4 alternate; }
+@keyframes cue-flash { to { background: #ff6a5c; } }
+/* On the brake: the bar settles so the eye moves to the target gauge. */
+.cue-body[data-mode="braking"] .cue-fill { background: rgba(255, 61, 46, 0.5); }
+/* Braked early: the bar stops where you did, in the early colour. */
+.cue-body[data-mode="braking"][data-early] .cue-fill { background: rgb(111, 193, 255); }
+.cue-body[data-mode="noref"] .cue-cap,
+.cue-body[data-mode="nozones"] .cue-cap { color: var(--hud-muted); }
+
+/* Target: the zone's reference peak, with your pressure filling up to it. */
+.cue-target { flex: none; display: flex; align-items: stretch; gap: 7px; margin-left: 7px; }
+.cue-gauge { position: relative; width: 6px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); }
+.cue-gauge i { position: absolute; left: 0; right: 0; }
+.cue-gauge-fill { bottom: 0; height: calc(var(--live) * 100%); border-radius: 2px; background: var(--brake); }
+.cue-gauge-peak { bottom: calc(var(--peak) * 100%); height: 2px; margin-bottom: -1px; background: #ff9b91; }
+.cue-gauge-target { left: -3px; right: -3px; bottom: calc(var(--target) * 100%); height: 2px; margin-bottom: -1px; border-radius: 1px; background: var(--hud-text); }
+.cue-body:not([data-mode="braking"]) .cue-gauge-peak { display: none; }
+.cue-target-text { display: grid; align-content: center; justify-items: start; gap: 4px; }
+.cue-target-text small {
+  font: 600 9px/1 var(--font-hud);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--hud-muted);
+}
+/* Outlined red, like the graph's reference peak labels. */
+.cue-target-text b {
+  padding: 3px 5px;
+  border: 1px solid rgba(255, 61, 46, 0.9);
+  border-radius: 4px;
+  background: rgba(var(--hud-surface), 0.9);
+  color: var(--hud-text);
+  font: 700 clamp(12px, 15cqh, 18px)/1 var(--font-hud);
+  font-variant-numeric: tabular-nums;
+}
+.cue-body[data-mode="idle"] .cue-target-text b { border-color: rgba(255, 61, 46, 0.5); color: rgba(232, 239, 238, 0.7); }
+
+/* Timing row: zone, grade, offset from the reference brake point, peak vs target. */
+.cue-verdict {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 18px;
+  overflow: hidden;
+  white-space: nowrap;
+  font: 600 11px/1 var(--font-hud);
+  color: var(--hud-muted);
+  font-variant-numeric: tabular-nums;
+}
+.cue-verdict.is-empty { font-weight: 500; }
+.cue-vzone { min-width: 16px; letter-spacing: 0.04em; }
+.cue-verdict.is-current .cue-vzone { color: var(--hud-text); }
+.cue-chip {
+  padding: 3px 6px 3px;
+  border-radius: 4px;
+  background: rgb(var(--g));
+  color: #07100c;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+/* Past the brake point and not braking yet: counts up until you do. */
+.cue-chip.is-pending { background: rgba(var(--g), 0.14); color: rgb(var(--g)); box-shadow: inset 0 0 0 1px rgb(var(--g)); }
+.cue-vtime { color: var(--hud-text); font-weight: 700; font-size: 12px; }
+.cue-verdict.is-empty .cue-vtime { color: var(--hud-muted); font-weight: 500; font-size: 11px; }
+.cue-vpeak { margin-left: auto; letter-spacing: 0.04em; text-transform: uppercase; }
+.cue-vpeak b { color: var(--hud-text); font-weight: 700; }
+.cue-vpeak small { font-size: 10.5px; }
+
+@container (max-width: 330px) { .cue-pips { display: none; } .cue-tools { margin-left: auto; } }
+@container (max-width: 290px) { .cue-vdist, .cue-next { display: none; } }
+@container (max-width: 250px) { .cue-vpeak { display: none; } }
+
 /* ============ Settings popover ============ */
 .ito-settings {
   position: fixed;
@@ -444,6 +628,19 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px 
 .key-live { background: #e0301f; color: #fff; }
 .key-ref { border: 1px solid rgba(255, 61, 46, 0.9); background: rgb(var(--hud-surface)); color: var(--hud-text); font-weight: 600; }
 
+/* Grade key (Brakes tab) */
+.grade-key {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--ui-raised);
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+.grade-key span { display: grid; grid-template-columns: 74px 1fr; align-items: center; gap: 8px; }
+.grade-key .cue-chip { justify-self: start; font: 700 10px/1 var(--font-hud); font-style: normal; }
+
 /* Reference card */
 .ref-card {
   display: grid;
@@ -551,6 +748,7 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px 
 .harness .icon-btn { color: var(--ui-text); background: rgba(255, 255, 255, 0.06); }
 .harness .icon-btn svg { width: 12px; height: 12px; fill: currentColor; stroke: none; }
 .seg-sm button { padding: 3px 8px; font-size: 12px; }
+.btn-sm { height: 26px; padding: 0 9px; font-size: 12px; white-space: nowrap; }
 .harness-hint {
   position: fixed;
   left: 18px;
