@@ -68,10 +68,6 @@ const REF_CONNECTOR: Color32 = Color32::from_rgba_premultiplied(102, 102, 102, 1
 const FLOOR: f32 = 0.004;
 /// Extra window drawn past each side (fraction of the span) so lines run off the edges.
 const OVERSCAN: f64 = 0.02;
-/// The canvas' 6 px shadow blur (series colour @ 55%) under a live line, approximated
-/// by two faint strokes (width, alpha of the series colour); each stroke is a full
-/// tessellation of the line, so this is kept short.
-const GLOW: [(f32, f32); 2] = [(12.0, 0.035), (6.0, 0.06)];
 /// egui centres a text's whole row box, which puts Barlow a point below where the
 /// canvas' `middle` baseline (used for all the prototype's text) puts it.
 const MIDDLE_BASELINE: Vec2 = vec2(0.0, -1.0);
@@ -482,15 +478,12 @@ fn flush_run(run: &mut Vec<Pos2>, edges: &mut Vec<Shape>, stroke: Stroke) {
     }
 }
 
-/// A live series: dark underlay (keeps it legible over its own fill), soft glow, line.
+/// A live series: dark underlay (keeps it legible over its own fill), then the line.
 fn paint_live_line(painter: &Painter, points: Vec<Pos2>, color: Color32) {
     if points.len() < 2 {
         return;
     }
     painter.line(points.clone(), Stroke::new(4.0, theme::alpha(theme::SURFACE, 0.55)));
-    for (width, alpha) in GLOW {
-        painter.line(points.clone(), Stroke::new(width, theme::alpha(color, alpha)));
-    }
     painter.line(points, Stroke::new(2.0, color));
 }
 

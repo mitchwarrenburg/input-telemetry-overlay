@@ -13,6 +13,12 @@ pub const BRAKE_ON: f32 = 0.05;
 pub const BRAKE_OFF: f32 = 0.02;
 /// iRacing's telemetry rate, and the rate Garage 61 exports at.
 pub const TELEMETRY_HZ: f64 = 60.0;
+/// Throttle pulses this short, rising from and falling back to [`BLIP_FLOOR`], are the
+/// car's auto-blip on a downshift (2–3 samples while the gear reads neutral), not the
+/// driver: nobody presses and releases a pedal that fast.
+pub const BLIP_MAX_S: f64 = 0.12;
+/// A blip starts and ends at or below this throttle.
+pub const BLIP_FLOOR: f32 = 0.05;
 /// Columns a reference file must have.
 pub const REQUIRED_COLUMNS: [&str; 3] = ["LapDistPct", "Brake", "Throttle"];
 
@@ -151,6 +157,36 @@ pub fn format_lap_time(sec: f64) -> String {
     format!("{}:{:02}.{:03}", m, rem / 1000, rem % 1000)
 }
 
+/// Flattens the auto-blips in a throttle trace (see [`BLIP_MAX_S`]): Garage 61 exports
+/// iRacing's `Throttle`, which includes them, while the live overlay reads the pedal
+/// (`ThrottleRaw`). Each blip becomes a straight line between the samples either side.
+/// Returns how many were removed.
+pub fn remove_blips(throttle: &mut [f32], hz: f64) -> usize {
+    let longest = (BLIP_MAX_S * hz).round().max(1.0) as usize;
+    let mut removed = 0;
+    let mut i = 1;
+    while i < throttle.len() {
+        if throttle[i] > BLIP_FLOOR && throttle[i - 1] <= BLIP_FLOOR {
+            let end = (i..throttle.len()).find(|&j| throttle[j] <= BLIP_FLOOR);
+            match end {
+                Some(end) if end - i <= longest => {
+                    let (a, b) = (throttle[i - 1], throttle[end]);
+                    let span = (end - i + 1) as f32;
+                    for (k, v) in throttle[i..end].iter_mut().enumerate() {
+                        *v = a + (b - a) * (k + 1) as f32 / span;
+                    }
+                    removed += 1;
+                    i = end;
+                }
+                Some(end) => i = end,
+                None => break,
+            }
+        }
+        i += 1;
+    }
+    removed
+}
+
 /// Brake zones with hysteresis ([`BRAKE_ON`] / [`BRAKE_OFF`]).
 pub fn find_zones(brake: &[f32]) -> Vec<BrakeZone> {
     let mut zones = Vec::new();
@@ -248,6 +284,7 @@ pub fn parse_garage61_csv(text: &str, file_name: &str) -> Result<Lap, LapError> 
     }
     let lap_time = meta.lap_time.unwrap_or(n as f64 / hz);
     let track_length_est = i_spd.map(|_| speed.iter().map(|&v| v as f64 / hz).sum::<f64>());
+    remove_blips(&mut throttle, hz);
     let start_latlon = pct.iter().zip(&latlon).take_while(|(p, _)| **p < 0.01).find_map(|(_, ll)| *ll);
 
     Ok(Lap {
@@ -481,5 +518,33 @@ mod tests {
         let again = parse_garage61_csv(&lap.to_csv(), G61_NAME).unwrap();
         assert_eq!(again.n(), lap.n());
         assert_eq!(again.zones.len(), lap.zones.len());
+    }
+
+    #[test]
+    fn downshift_blips_are_flattened() {
+        let lap = parse_garage61_csv(SAMPLE, G61_NAME).unwrap();
+        // The lap's blips (52-75% for 2-3 samples, all under braking) are gone. What's
+        // left under braking is the driver easing off the throttle as they brake.
+        let under_braking = lap.throttle.iter().zip(&lap.brake).filter(|&(&t, &b)| b > 0.4 && t > 0.3);
+        assert_eq!(under_braking.count(), 0);
+        assert_eq!(remove_blips(&mut lap.throttle.clone(), lap.hz), 0, "nothing left to remove");
+        // Real throttle is untouched: the lap still hits full throttle, and as often.
+        let full = lap.throttle.iter().filter(|&&t| t >= 0.999).count();
+        assert!(full > 3000, "{full}");
+    }
+
+    #[test]
+    fn blip_removal_keeps_real_throttle() {
+        let mut t = vec![0.0, 0.0, 0.52, 0.65, 0.0, 0.0, 0.03, 0.75, 0.04, 0.0];
+        t.extend(std::iter::repeat_n(0.8, 30)); // a real application, 0.5 s
+        t.push(0.0);
+        let before = t.clone();
+        assert_eq!(remove_blips(&mut t, 60.0), 2);
+        assert!(t[2] <= BLIP_FLOOR && t[3] <= BLIP_FLOOR, "{t:?}");
+        assert!((t[7] - 0.035).abs() < 1e-6, "between its neighbours: {}", t[7]);
+        assert_eq!(t[10..], before[10..], "the long press stays");
+        // A trace that starts or ends on the throttle isn't a blip.
+        let mut edges = vec![1.0, 1.0, 0.0, 0.0, 0.9];
+        assert_eq!(remove_blips(&mut edges, 60.0), 0);
     }
 }

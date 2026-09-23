@@ -399,7 +399,8 @@ mod live {
         TelemetryFrame {
             session_time: f.session_time,
             lap_dist_pct: f64::from(f.lap_dist_pct),
-            throttle: f.throttle,
+            // The pedal: `Throttle` also carries the car's auto-blip on downshifts.
+            throttle: f.throttle_raw,
             brake: f.brake,
             on_track: CarState::of(f).is_driving(),
         }

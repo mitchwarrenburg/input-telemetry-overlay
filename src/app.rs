@@ -505,12 +505,16 @@ impl OverlayApp {
         }
     }
 
-    fn on_intent(&mut self, intent: Intent, frame: &eframe::Frame) {
+    fn on_intent(&mut self, intent: Intent, ctx: &egui::Context, frame: &eframe::Frame) {
         // egui's StartDrag/BeginResize need focus, which this window never takes.
         let window = frame.winit_window();
         let started = match intent {
             Intent::ToggleSettings => {
                 self.settings_open = !self.settings_open;
+                return;
+            }
+            Intent::Close => {
+                ctx.send_viewport_cmd(ViewportCommand::Close);
                 return;
             }
             Intent::Move => window.map(|w| w.drag_window()),
@@ -609,7 +613,7 @@ impl eframe::App for OverlayApp {
         let now = Instant::now();
         self.track_window(&ctx, frame, now);
         if let Some(intent) = self.paint_overlay(ui, ui.max_rect(), now) {
-            self.on_intent(intent, frame);
+            self.on_intent(intent, &ctx, frame);
         }
         if let Some(path) = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf())) {
             self.import(&path);

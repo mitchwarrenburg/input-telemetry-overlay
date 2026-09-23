@@ -59,6 +59,10 @@ Prix". So the overlay checks the lap itself:
 A lap from another car on the same layout is still drawn, with a "Different car" note. A
 lap from another track or layout is hidden, because its distances wouldn't line up.
 
+Garage 61 exports the car's throttle, which includes the auto-blip on every downshift: a
+50-75% spike for two or three samples. Those are flattened when a lap is loaded, and the
+live line reads your pedal (`ThrottleRaw`), so neither side shows them.
+
 ## Using the overlay
 
 | Action | How |
@@ -66,6 +70,7 @@ lap from another track or layout is hidden, because its distances wouldn't line 
 | Move | Drag the title bar |
 | Resize | Hover the overlay, then drag a corner or edge anchor |
 | Settings | The gear in the top-right corner, or the tray icon |
+| Close | The × next to the gear, or the tray icon's Quit |
 | Lock (click-through) | Settings → Display → Lock size & position |
 | Unlock | **Ctrl+Alt+Shift+O** (change it in Settings → Display), or the tray icon |
 

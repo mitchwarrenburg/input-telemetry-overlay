@@ -1,4 +1,4 @@
-//! Overlay chrome: panel background, header (title, legend, badge, gear), resize
+//! Overlay chrome: panel background, header (title, legend, badge, gear, close), resize
 //! anchors, hover outline, size readout and the file-drop hint.
 
 use std::sync::Arc;
@@ -27,8 +27,13 @@ const PAD_LEFT: f32 = 11.0;
 const PAD_RIGHT: f32 = 5.0;
 /// Gap between the title and the legend.
 const ITEM_GAP: f32 = 14.0;
+/// The gear and close buttons, square.
 const GEAR_SIZE: f32 = 22.0;
 const GEAR_ICON: f32 = 16.0;
+/// Space between the gear and the close button.
+const BUTTON_GAP: f32 = 2.0;
+/// Half the width of the close button's ×.
+const CLOSE_ARM: f32 = 4.0;
 /// The gear turns by half a tooth while the settings window is open.
 const GEAR_OPEN_TURN: f32 = 67.5;
 /// Header items are padded by this much when handed to the graph as obstacles.
@@ -101,6 +106,8 @@ pub enum Intent {
     /// Pressed on an anchor: resize the window.
     Resize(ResizeDirection),
     ToggleSettings,
+    /// The close button: quit the overlay.
+    Close,
 }
 
 pub struct Header {
@@ -119,8 +126,8 @@ pub fn content_rect(window: Rect) -> Rect {
     panel_rect(window).shrink(BORDER_W)
 }
 
-/// Paints the panel background and the header, and senses the header drag and the
-/// gear. Call before painting the graph.
+/// Paints the panel background and the header, and senses the header drag, the gear
+/// and the close button. Call before painting the graph.
 pub fn panel_and_header(ui: &Ui, window: Rect, chrome: &Chrome) -> Header {
     let painter = ui.painter();
     paint_panel(painter, window, chrome.opacity);
@@ -155,6 +162,15 @@ pub fn panel_and_header(ui: &Ui, window: Rect, chrome: &Chrome) -> Header {
         egui::emath::easing::cubic_out,
     );
     paint_gear(painter, layout.gear, gear.hovered(), chrome.settings_open, turn);
+
+    let close = ui
+        .interact(layout.close, Id::new("ito-close"), Sense::click())
+        .on_hover_cursor(CursorIcon::PointingHand)
+        .on_hover_text("Close the overlay");
+    if close.clicked() {
+        intent = Some(Intent::Close);
+    }
+    paint_close(painter, layout.close, close.hovered());
 
     Header { obstacles: layout.obstacles(), intent }
 }
@@ -376,13 +392,14 @@ fn paint_fill_swatch(painter: &Painter, rect: Rect, color: Color32) {
     painter.add(mesh);
 }
 
-/// Title, legend, badges and gear, positioned for this header width.
+/// Title, legend, badges, gear and close button, positioned for this header width.
 struct HeaderLayout {
     title_pos: Pos2,
     title: Arc<Galley>,
     legend: Vec<LegendItem>,
     badges: Vec<(Rect, Arc<Galley>)>,
     gear: Rect,
+    close: Rect,
 }
 
 impl HeaderLayout {
@@ -394,8 +411,9 @@ impl HeaderLayout {
         let title = title_galley(painter, header.width());
         let title_pos = pos2(header.left() + PAD_LEFT, cy - title.size().y / 2.0);
         let title_right = title_pos.x + title.size().x;
-        let gear =
+        let close =
             Rect::from_center_size(pos2(header.right() - PAD_RIGHT - GEAR_SIZE / 2.0, cy), Vec2::splat(GEAR_SIZE));
+        let gear = close.translate(vec2(-(GEAR_SIZE + BUTTON_GAP), 0.0));
 
         let badges = place_badges(painter, chrome.badges, gear.left() - 8.0, title_right + ITEM_GAP, cy);
         let right_limit = badges.last().map_or(gear.left(), |(r, _)| r.left()) - ITEM_GAP;
@@ -406,13 +424,13 @@ impl HeaderLayout {
                 legend.clear();
             }
         }
-        Self { title_pos, title, legend, badges, gear }
+        Self { title_pos, title, legend, badges, gear, close }
     }
 
     fn obstacles(&self) -> Vec<Rect> {
         let title = Rect::from_min_size(self.title_pos, self.title.size());
         let legend = self.legend.iter().map(LegendItem::rect).reduce(Rect::union);
-        [Some(title), legend, Some(self.gear)]
+        [Some(title), legend, Some(self.gear), Some(self.close)]
             .into_iter()
             .flatten()
             .chain(self.badges.iter().map(|(r, _)| *r))
@@ -492,6 +510,20 @@ fn paint_gear(painter: &Painter, rect: Rect, hovered: bool, open: bool, turn: f3
     let stroke = Stroke::new(GEAR_STROKE * scale, color);
     painter.add(Shape::closed_line(outline, stroke));
     painter.circle_stroke(center, GEAR_HOLE_R * scale, stroke);
+}
+
+/// A muted × that turns red on hover, sized to match the gear.
+fn paint_close(painter: &Painter, rect: Rect, hovered: bool) {
+    let (color, background) = if hovered {
+        (theme::HUD_TEXT, theme::alpha(theme::DANGER, 0.22))
+    } else {
+        (theme::HUD_MUTED, Color32::TRANSPARENT)
+    };
+    painter.rect_filled(rect, CornerRadius::same(6), background);
+    let c = rect.center();
+    let stroke = Stroke::new(GEAR_STROKE * GEAR_ICON / 24.0 * 1.1, color);
+    painter.line_segment([c + vec2(-CLOSE_ARM, -CLOSE_ARM), c + vec2(CLOSE_ARM, CLOSE_ARM)], stroke);
+    painter.line_segment([c + vec2(CLOSE_ARM, -CLOSE_ARM), c + vec2(-CLOSE_ARM, CLOSE_ARM)], stroke);
 }
 
 fn paint_anchor(painter: &Painter, rect: Rect, dir: ResizeDirection, active: bool, alpha: f32) {
@@ -651,7 +683,7 @@ mod tests {
     #[test]
     fn header_items_shrink_with_the_panel() {
         let wide = header_for(680.0, &chrome(&["DEMO"], Some("1:55.992")));
-        assert_eq!(wide.len(), 4, "title, legend, gear, badge: {wide:?}");
+        assert_eq!(wide.len(), 5, "title, legend, gear, close, badge: {wide:?}");
         for (i, a) in wide.iter().enumerate() {
             for b in &wide[i + 1..] {
                 assert!(!a.shrink(OBSTACLE_PAD).intersects(b.shrink(OBSTACLE_PAD)), "{a:?} overlaps {b:?}");
@@ -660,7 +692,7 @@ mod tests {
         let title_w = wide[0].width();
 
         let narrow = header_for(500.0, &chrome(&[], Some("1:55.992")));
-        assert_eq!(narrow.len(), 2, "no legend below 540: {narrow:?}");
+        assert_eq!(narrow.len(), 3, "no legend below 540: {narrow:?}");
 
         let tiny = header_for(300.0, &chrome(&[], None));
         assert!(tiny[0].width() < title_w, "short title");

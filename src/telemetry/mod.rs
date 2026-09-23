@@ -10,7 +10,7 @@ pub struct TelemetryFrame {
     pub session_time: f64,
     /// `LapDistPct`, 0..1 (negative when not on track).
     pub lap_dist_pct: f64,
-    /// `Throttle`, 0..1.
+    /// `ThrottleRaw`, 0..1: the pedal, without the car's auto-blip on downshifts.
     pub throttle: f32,
     /// `Brake`, 0..1.
     pub brake: f32,
