@@ -100,8 +100,18 @@ fn words(s: &str) -> Vec<String> {
 
 /// Words that differ between the two naming schemes, or that everything shares.
 const TRACK_NOISE: [&str; 12] = [
-    "circuit", "raceway", "international", "internazionale", "autodromo", "park", "racing", "course",
-    "speedway", "the", "arena", "pits",
+    "circuit",
+    "raceway",
+    "international",
+    "internazionale",
+    "autodromo",
+    "park",
+    "racing",
+    "course",
+    "speedway",
+    "the",
+    "arena",
+    "pits",
 ];
 
 fn track_tokens(s: &str) -> Vec<String> {
@@ -182,8 +192,12 @@ fn car_match(reference: &str, session: &SessionInfo) -> Option<bool> {
     if want.is_empty() {
         return None;
     }
-    let names: Vec<Vec<String>> =
-        [&session.car_name, &session.car_short_name].into_iter().flatten().map(|s| words(s)).filter(|w| !w.is_empty()).collect();
+    let names: Vec<Vec<String>> = [&session.car_name, &session.car_short_name]
+        .into_iter()
+        .flatten()
+        .map(|s| words(s))
+        .filter(|w| !w.is_empty())
+        .collect();
     if names.is_empty() {
         return None;
     }
@@ -229,12 +243,30 @@ mod tests {
     #[test]
     fn physical_check_beats_different_names() {
         let s = silverstone("Ferrari 296 GT3");
-        assert_eq!(status(&r("Silverstone Circuit (Grand Prix)", "Ferrari 296 GT3", Some(5786.4), Some(START)), Some(&s)), MatchStatus::Match);
+        assert_eq!(
+            status(&r("Silverstone Circuit (Grand Prix)", "Ferrari 296 GT3", Some(5786.4), Some(START)), Some(&s)),
+            MatchStatus::Match
+        );
         // Same start line, 3.6 km lap: another layout.
-        assert_eq!(status(&r("Silverstone Circuit (National)", "Ferrari 296 GT3", Some(2638.0), Some(START)), Some(&s)), MatchStatus::DifferentLayout);
+        assert_eq!(
+            status(&r("Silverstone Circuit (National)", "Ferrari 296 GT3", Some(2638.0), Some(START)), Some(&s)),
+            MatchStatus::DifferentLayout
+        );
         // Starts 2 km away.
-        assert_eq!(status(&r("Silverstone Circuit (Grand Prix)", "Ferrari 296 GT3", Some(5786.4), Some((52.08, -1.0))), Some(&s)), MatchStatus::DifferentTrack);
-        assert_eq!(status(&r("Silverstone Circuit (Grand Prix)", "Porsche 911 GT3 R (992)", Some(5786.4), Some(START)), Some(&s)), MatchStatus::DifferentCar);
+        assert_eq!(
+            status(
+                &r("Silverstone Circuit (Grand Prix)", "Ferrari 296 GT3", Some(5786.4), Some((52.08, -1.0))),
+                Some(&s)
+            ),
+            MatchStatus::DifferentTrack
+        );
+        assert_eq!(
+            status(
+                &r("Silverstone Circuit (Grand Prix)", "Porsche 911 GT3 R (992)", Some(5786.4), Some(START)),
+                Some(&s)
+            ),
+            MatchStatus::DifferentCar
+        );
     }
 
     #[test]
@@ -242,20 +274,57 @@ mod tests {
         let mut s = silverstone("Ferrari 296 GT3");
         s.track_latlon = None;
         s.track_length_m = None;
-        assert_eq!(status(&r("Silverstone Circuit (Grand Prix)", "Ferrari 296 GT3", None, None), Some(&s)), MatchStatus::Match);
-        assert_eq!(status(&r("Silverstone Circuit (National)", "Ferrari 296 GT3", None, None), Some(&s)), MatchStatus::DifferentLayout);
-        assert_eq!(status(&r("Circuit de Spa-Francorchamps (Grand Prix Pits)", "Ferrari 296 GT3", None, None), Some(&s)), MatchStatus::DifferentTrack);
+        assert_eq!(
+            status(&r("Silverstone Circuit (Grand Prix)", "Ferrari 296 GT3", None, None), Some(&s)),
+            MatchStatus::Match
+        );
+        assert_eq!(
+            status(&r("Silverstone Circuit (National)", "Ferrari 296 GT3", None, None), Some(&s)),
+            MatchStatus::DifferentLayout
+        );
+        assert_eq!(
+            status(&r("Circuit de Spa-Francorchamps (Grand Prix Pits)", "Ferrari 296 GT3", None, None), Some(&s)),
+            MatchStatus::DifferentTrack
+        );
 
-        let imola = SessionInfo { track_display_name: Some("Autodromo Enzo e Dino Ferrari".into()), car_name: Some("Aston Martin Valkyrie".into()), ..Default::default() };
-        assert_eq!(status(&r("Autodromo Internazionale Enzo e Dino Ferrari (Grand Prix)", "Aston Martin Valkyrie", None, None), Some(&imola)), MatchStatus::Match);
+        let imola = SessionInfo {
+            track_display_name: Some("Autodromo Enzo e Dino Ferrari".into()),
+            car_name: Some("Aston Martin Valkyrie".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            status(
+                &r("Autodromo Internazionale Enzo e Dino Ferrari (Grand Prix)", "Aston Martin Valkyrie", None, None),
+                Some(&imola)
+            ),
+            MatchStatus::Match
+        );
 
-        let spa = SessionInfo { track_display_name: Some("Circuit de Spa-Francorchamps".into()), track_config_name: Some("Grand Prix".into()), ..Default::default() };
-        assert_eq!(status(&r("Circuit de Spa-Francorchamps (Grand Prix Pits)", "x", None, None), Some(&spa)), MatchStatus::Match);
+        let spa = SessionInfo {
+            track_display_name: Some("Circuit de Spa-Francorchamps".into()),
+            track_config_name: Some("Grand Prix".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            status(&r("Circuit de Spa-Francorchamps (Grand Prix Pits)", "x", None, None), Some(&spa)),
+            MatchStatus::Match
+        );
 
-        let nurb = SessionInfo { track_display_name: Some("Nürburgring Combined".into()), track_config_name: Some("Gesamtstrecke VLN".into()), ..Default::default() };
-        assert_eq!(status(&r("Nurburgring Combined (Gesamtstrecke VLN)", "x", None, None), Some(&nurb)), MatchStatus::Match);
+        let nurb = SessionInfo {
+            track_display_name: Some("Nürburgring Combined".into()),
+            track_config_name: Some("Gesamtstrecke VLN".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            status(&r("Nurburgring Combined (Gesamtstrecke VLN)", "x", None, None), Some(&nurb)),
+            MatchStatus::Match
+        );
 
-        let summit = SessionInfo { track_display_name: Some("Summit Point Raceway".into()), track_config_name: Some("Summit Point Raceway".into()), ..Default::default() };
+        let summit = SessionInfo {
+            track_display_name: Some("Summit Point Raceway".into()),
+            track_config_name: Some("Summit Point Raceway".into()),
+            ..Default::default()
+        };
         assert_eq!(status(&r("Summit Point Raceway", "x", None, None), Some(&summit)), MatchStatus::Match);
     }
 
@@ -263,8 +332,14 @@ mod tests {
     fn length_alone_rules_out_other_layouts() {
         let mut s = silverstone("Ferrari 296 GT3");
         s.track_latlon = None;
-        assert_eq!(status(&r("Silverstone Circuit (Grand Prix)", "Ferrari 296 GT3", Some(5786.4), None), Some(&s)), MatchStatus::Match);
-        assert_eq!(status(&r("Silverstone Circuit (Grand Prix)", "Ferrari 296 GT3", Some(3600.0), None), Some(&s)), MatchStatus::DifferentLayout);
+        assert_eq!(
+            status(&r("Silverstone Circuit (Grand Prix)", "Ferrari 296 GT3", Some(5786.4), None), Some(&s)),
+            MatchStatus::Match
+        );
+        assert_eq!(
+            status(&r("Silverstone Circuit (Grand Prix)", "Ferrari 296 GT3", Some(3600.0), None), Some(&s)),
+            MatchStatus::DifferentLayout
+        );
     }
 
     #[test]

@@ -79,9 +79,6 @@ pub fn install_fonts(ctx: &egui::Context) {
         chain.extend(defs.families.get(&FontFamily::Proportional).cloned().unwrap_or_default());
         defs.families.insert(FontFamily::Name(name.into()), chain);
     }
-    defs.families
-        .entry(FontFamily::Proportional)
-        .or_default()
-        .insert(0, Weight::Regular.family_name().to_string());
+    defs.families.entry(FontFamily::Proportional).or_default().insert(0, Weight::Regular.family_name().to_string());
     ctx.set_fonts(defs);
 }

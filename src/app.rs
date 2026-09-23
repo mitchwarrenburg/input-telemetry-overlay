@@ -41,7 +41,7 @@ const READOUT_HOLD: Duration = Duration::from_millis(800);
 /// egui takes one predicted frame off `request_repaint_after` delays; add it back.
 const FRAME: Duration = Duration::from_millis(17);
 const WAITING: (&str, &str) = ("WAITING FOR IRACING", "Start a session, or turn on demo mode in settings");
-const NO_REFERENCE: (&str, &str) = ("NO REFERENCE LAP", "Drop a Garage 61 CSV here, or ⚙ → Reference");
+const NO_REFERENCE: (&str, &str) = ("NO REFERENCE LAP", "Drop a Garage 61 CSV here, or load one in ⚙ settings");
 
 /// Command-line options.
 #[derive(Debug, Clone, Default)]
@@ -56,6 +56,9 @@ pub struct LaunchOptions {
     pub settings_screenshot: Option<PathBuf>,
     /// Use this folder instead of %APPDATA%\input-telemetry-overlay.
     pub data_dir: Option<PathBuf>,
+    /// Garage 61 CSVs to add to the library at start (a CSV dropped on the exe, or
+    /// "Open with"); the last one becomes the reference.
+    pub import: Vec<PathBuf>,
 }
 
 impl LaunchOptions {
@@ -74,7 +77,8 @@ pub fn run(opts: LaunchOptions) -> eframe::Result {
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
-    let result = eframe::run_native(TITLE, options, Box::new(move |cc| Ok(Box::new(OverlayApp::new(cc, opts, settings)))));
+    let result =
+        eframe::run_native(TITLE, options, Box::new(move |cc| Ok(Box::new(OverlayApp::new(cc, opts, settings)))));
     if let Err(e) = &result {
         log::error!("The overlay couldn't start: {e}");
     }
@@ -116,8 +120,10 @@ pub struct OverlayApp {
     live: bool,
     demo: Option<Demo>,
     desktop: Desktop,
-    /// Last import, load or hotkey error, shown in the settings window.
+    /// Last import or load error, shown in the settings window.
     error: Option<String>,
+    /// Why the unlock shortcut couldn't be registered.
+    hotkey_error: Option<String>,
     settings_open: bool,
     /// Height the settings panel asked for last frame.
     settings_height: f32,
@@ -129,7 +135,8 @@ pub struct OverlayApp {
 }
 
 impl OverlayApp {
-    fn new(cc: &eframe::CreationContext<'_>, opts: LaunchOptions, settings: Settings) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, mut opts: LaunchOptions, settings: Settings) -> Self {
+        let import = std::mem::take(&mut opts.import);
         let ctx = &cc.egui_ctx;
         theme::install_fonts(ctx);
         ctx.set_theme(egui::Theme::Dark);
@@ -138,9 +145,10 @@ impl OverlayApp {
             prepare_window(window, settings.window);
         }
 
-        let tray_icon = decode_icon(include_bytes!("../assets/icon/icon-32.png")).map(|i| (i.pixels, i.width, i.height));
+        let tray_icon =
+            decode_icon(include_bytes!("../assets/icon/icon-32.png")).map(|i| (i.pixels, i.width, i.height));
         let mut desktop = Desktop::new(ctx, tray_icon, settings.locked);
-        let error = desktop.set_hotkey(&settings.unlock_hotkey).err();
+        let hotkey_error = desktop.set_hotkey(&settings.unlock_hotkey).err();
         let reader = (!opts.demo).then(|| spawn_reader(ctx, settings.update_hz));
         let paths = Paths::new(&opts.data_dir());
         let mut app = Self {
@@ -159,7 +167,8 @@ impl OverlayApp {
             live: false,
             demo: None,
             desktop,
-            error,
+            error: None,
+            hotkey_error,
             settings_open: opts.open_settings.is_some() || opts.settings_screenshot.is_some(),
             settings_height: 400.0,
             browsing: false,
@@ -175,6 +184,9 @@ impl OverlayApp {
             app.settings.locked = false;
         }
         app.enter_idle(Instant::now());
+        for path in &import {
+            app.import(path);
+        }
         app
     }
 
@@ -352,10 +364,8 @@ impl OverlayApp {
         {
             reader.set_wake_divisor(wake_divisor(new.update_hz));
         }
-        if old.unlock_hotkey != new.unlock_hotkey
-            && let Err(e) = self.desktop.set_hotkey(&new.unlock_hotkey)
-        {
-            self.error = Some(e);
+        if old.unlock_hotkey != new.unlock_hotkey {
+            self.hotkey_error = self.desktop.set_hotkey(&new.unlock_hotkey).err();
         }
         let restart_idle = old.demo_when_idle != new.demo_when_idle && !self.live && !self.force_demo;
         let auto_on = new.auto_reference && !old.auto_reference;
@@ -507,11 +517,13 @@ impl OverlayApp {
                 reference: self.reference.lap().zip(status).map(|(lap, s)| (lap.as_ref(), s)),
                 active_id: self.reference.id(),
                 error: self.error.as_deref(),
+                hotkey_error: self.hotkey_error.as_deref(),
                 connection,
                 browsing: self.browsing,
                 file_hover,
             };
-            let panel = egui::CentralPanel::no_frame().show(ui, |ui| settings_panel::show(ui, &mut self.settings, &cx)).inner;
+            let panel =
+                egui::CentralPanel::no_frame().show(ui, |ui| settings_panel::show(ui, &mut self.settings, &cx)).inner;
             SettingsFrame { panel, dropped, close }
         });
 

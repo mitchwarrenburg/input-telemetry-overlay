@@ -117,7 +117,10 @@ mod tests {
     #[test]
     fn settings_go_below_a_high_overlay() {
         let panel = panel_at(620.0, 100.0);
-        assert_eq!(settings_position(panel, SETTINGS, MONITOR), pos2(panel.right() - SETTINGS.x, panel.bottom() + 10.0));
+        assert_eq!(
+            settings_position(panel, SETTINGS, MONITOR),
+            pos2(panel.right() - SETTINGS.x, panel.bottom() + 10.0)
+        );
     }
 
     #[test]

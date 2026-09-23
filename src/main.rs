@@ -22,7 +22,10 @@ mod start {
     const USAGE: &str = "\
 Input Telemetry Overlay: your throttle and brake against a Garage 61 reference lap.
 
-Usage: input-telemetry-overlay [options]
+Usage: input-telemetry-overlay [options] [lap.csv ...]
+
+CSV files given on the command line (or dropped on the program) are added to the
+lap library, and the last one becomes the reference.
 
 Options:
   --demo                       Drive the simulated car, even if iRacing is running
@@ -70,7 +73,8 @@ Options:
                 "--screenshot" => opts.screenshot = Some(value()?.into()),
                 "--settings-screenshot" => opts.settings_screenshot = Some(value()?.into()),
                 "--data-dir" => opts.data_dir = Some(value()?.into()),
-                other => return Err(format!("Unknown option: {other}")),
+                other if other.starts_with('-') => return Err(format!("Unknown option: {other}")),
+                path => opts.import.push(path.into()),
             }
         }
         Ok(Command::Run(opts))
@@ -109,7 +113,8 @@ Options:
 
         impl Logger {
             fn level_for(&self, target: &str) -> LevelFilter {
-                let ours = target == "ito" || target.starts_with("ito::") || target.starts_with("input_telemetry_overlay");
+                let ours =
+                    target == "ito" || target.starts_with("ito::") || target.starts_with("input_telemetry_overlay");
                 if ours { self.ours } else { LevelFilter::Warn.min(self.ours) }
             }
         }
@@ -203,6 +208,13 @@ Options:
             assert_eq!(parse(&["--settings"]).unwrap_err(), "--settings needs a value");
             assert!(parse(&["--settings", "audio"]).is_err());
             assert!(parse(&["--fast"]).is_err());
+        }
+
+        #[test]
+        fn other_arguments_are_laps_to_import() {
+            let Ok(Command::Run(o)) = parse(&["a.csv", "--demo", r"C:\laps\b.csv"]) else { panic!() };
+            assert_eq!(o.import, [std::path::PathBuf::from("a.csv"), r"C:\laps\b.csv".into()]);
+            assert!(o.demo);
         }
     }
 }

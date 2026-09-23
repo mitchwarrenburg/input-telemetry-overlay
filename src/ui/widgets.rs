@@ -13,9 +13,8 @@ use eframe::egui::epaint::tessellator::path::rounded_rectangle;
 use eframe::egui::epaint::{CornerRadiusF32, Shadow};
 use eframe::egui::text::{LayoutJob, TextWrapping};
 use eframe::egui::{
-    Align2, Color32, CornerRadius, CursorIcon, EventFilter, FontId, Galley, Id, Key, Painter, Pos2, Rangef,
-    Rect, Response, Sense, Shape, Stroke, StrokeKind, TextFormat, Ui, Vec2, Widget, WidgetInfo, WidgetType, lerp,
-    pos2, vec2,
+    Align2, Color32, CornerRadius, CursorIcon, EventFilter, FontId, Galley, Id, Key, Painter, Pos2, Rangef, Rect,
+    Response, Sense, Shape, Stroke, StrokeKind, TextFormat, Ui, Vec2, Widget, WidgetInfo, WidgetType, lerp, pos2, vec2,
 };
 
 use super::theme::{self, Weight};
@@ -67,10 +66,8 @@ impl TextBlock {
         for section in &mut job.sections {
             section.format.line_height = Some(line_height);
         }
-        let font_height = job
-            .sections
-            .first()
-            .map_or(line_height, |s| ui.ctx().fonts_mut(|f| f.row_height(&s.format.font_id)));
+        let font_height =
+            job.sections.first().map_or(line_height, |s| ui.ctx().fonts_mut(|f| f.row_height(&s.format.font_id)));
         Self { galley: ui.painter().layout_job(job), lead: ((line_height - font_height) / 2.0).max(0.0) }
     }
 
@@ -133,6 +130,14 @@ pub fn hint(ui: &mut Ui, text: &str) {
     block.paint(ui.painter(), rect.min);
 }
 
+/// Wrapped 12 px problem text under a control.
+pub fn error_text(ui: &mut Ui, text: &str) {
+    let width = ui.available_width();
+    let block = TextBlock::wrapped(ui, text, theme::font(Weight::Regular, 12.0), theme::DANGER, width, LINE_SMALL);
+    let (rect, _) = ui.allocate_exact_size(vec2(width, block.size().y), Sense::hover());
+    block.paint(ui.painter(), rect.min);
+}
+
 /// A setting's name on its own line above its control (`.row-head`).
 pub fn row_label(ui: &mut Ui, text: &str) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), LINE), Sense::hover());
@@ -142,7 +147,8 @@ pub fn row_label(ui: &mut Ui, text: &str) {
 /// Label (plus optional muted detail) on the left, value on the right.
 fn paint_row_head(ui: &Ui, rect: Rect, label: &str, detail: Option<&str>, value: Option<&str>) {
     let painter = ui.painter();
-    let value = value.map(|v| painter.layout_no_wrap(v.to_owned(), theme::font(Weight::SemiBold, 13.0), theme::UI_TEXT));
+    let value =
+        value.map(|v| painter.layout_no_wrap(v.to_owned(), theme::font(Weight::SemiBold, 13.0), theme::UI_TEXT));
     let value_width = value.as_ref().map_or(0.0, |g| g.size().x + 8.0);
 
     let mut job = LayoutJob::default();
@@ -197,7 +203,16 @@ pub fn paint_icon(painter: &Painter, rect: Rect, icon: Icon, color: Color32, str
             painter.line_segment([p(12.0, 15.0), p(12.0, 4.0)], stroke);
             painter.line(vec![p(7.5, 8.5), p(12.0, 4.0), p(16.5, 8.5)], stroke);
             painter.line(
-                vec![p(4.0, 15.0), p(4.0, 18.0), p(4.6, 19.4), p(6.0, 20.0), p(18.0, 20.0), p(19.4, 19.4), p(20.0, 18.0), p(20.0, 15.0)],
+                vec![
+                    p(4.0, 15.0),
+                    p(4.0, 18.0),
+                    p(4.6, 19.4),
+                    p(6.0, 20.0),
+                    p(18.0, 20.0),
+                    p(19.4, 19.4),
+                    p(20.0, 18.0),
+                    p(20.0, 15.0),
+                ],
                 stroke,
             );
         }
@@ -316,7 +331,13 @@ impl Widget for Slider<'_> {
         let text = format_value(value, self.unit, self.off_at_zero);
         response.widget_info(|| WidgetInfo::slider(ui.is_enabled(), f64::from(value), self.label));
 
-        paint_row_head(ui, Rect::from_min_size(rect.min, vec2(rect.width(), LINE)), self.label, self.detail, Some(&text));
+        paint_row_head(
+            ui,
+            Rect::from_min_size(rect.min, vec2(rect.width(), LINE)),
+            self.label,
+            self.detail,
+            Some(&text),
+        );
         let (lo, hi) = (*self.range.start(), *self.range.end());
         let t = if hi > lo { ((value - lo) / (hi - lo)).clamp(0.0, 1.0) } else { 0.0 };
         let thumb = pos2(lerp(x_range, t), track.center().y);
@@ -374,9 +395,9 @@ impl Widget for Switch<'_> {
         let width = ui.available_width();
         let text_width = width - SIZE.x - 12.0;
         let label = single_line(ui, self.label, label_font(), theme::UI_TEXT, text_width);
-        let hint = self
-            .hint
-            .map(|h| TextBlock::wrapped(ui, h, theme::font(Weight::Regular, 12.0), theme::UI_MUTED, text_width, LINE_SMALL));
+        let hint = self.hint.map(|h| {
+            TextBlock::wrapped(ui, h, theme::font(Weight::Regular, 12.0), theme::UI_MUTED, text_width, LINE_SMALL)
+        });
         let height = LINE + hint.as_ref().map_or(0.0, |h| 1.0 + h.size().y);
 
         let (rect, mut response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
@@ -512,7 +533,10 @@ fn paint_tab(painter: &Painter, response: &Response, galley: Arc<Galley>, select
     let text_box = Rect::from_min_size(rect.min + vec2(0.0, 8.0), vec2(rect.width(), LINE));
     paint_galley(painter, text_box, Align2::CENTER_CENTER, galley, color);
     if selected {
-        let underline = Rect::from_min_max(pos2(rect.left() + 8.0, rect.bottom() - 1.0), pos2(rect.right() - 8.0, rect.bottom() + 1.0));
+        let underline = Rect::from_min_max(
+            pos2(rect.left() + 8.0, rect.bottom() - 1.0),
+            pos2(rect.right() - 8.0, rect.bottom() + 1.0),
+        );
         painter.rect_filled(underline, CornerRadius { nw: 2, ne: 2, sw: 0, se: 0 }, theme::ACCENT);
     }
     if response.has_focus() {
@@ -570,7 +594,8 @@ impl<'a> Button<'a> {
 
 impl Widget for Button<'_> {
     fn ui(self, ui: &mut Ui) -> Response {
-        let (height, font_size, pad, radius) = if self.small { (22.0, 11.5, 8.0, 6.0) } else { (30.0, 12.5, 12.0, 7.0) };
+        let (height, font_size, pad, radius) =
+            if self.small { (22.0, 11.5, 8.0, 6.0) } else { (30.0, 12.5, 12.0, 7.0) };
         let font = theme::font(Weight::SemiBold, font_size);
         let galley = ui.painter().layout_no_wrap(self.text.to_owned(), font, Color32::PLACEHOLDER);
         let width = if self.fill_width { ui.available_width() } else { galley.size().x + 2.0 * pad };
@@ -580,8 +605,12 @@ impl Widget for Button<'_> {
         let painter = ui.painter();
         let hot = hot(&response);
         let (fill, border, text) = match self.kind {
-            ButtonKind::Standard => (if hot { white(0.08) } else { theme::UI_RAISED }, theme::UI_LINE_STRONG, theme::UI_TEXT),
-            ButtonKind::Quiet => (Color32::TRANSPARENT, Color32::TRANSPARENT, if hot { theme::UI_TEXT } else { theme::UI_MUTED }),
+            ButtonKind::Standard => {
+                (if hot { white(0.08) } else { theme::UI_RAISED }, theme::UI_LINE_STRONG, theme::UI_TEXT)
+            }
+            ButtonKind::Quiet => {
+                (Color32::TRANSPARENT, Color32::TRANSPARENT, if hot { theme::UI_TEXT } else { theme::UI_MUTED })
+            }
             ButtonKind::Danger => (
                 theme::alpha(theme::DANGER, if hot { 0.24 } else { 0.14 }),
                 theme::alpha(theme::DANGER, 0.5),
@@ -699,7 +728,9 @@ impl<'a> DropZone<'a> {
     }
 
     fn content(&self, ui: &Ui, width: f32) -> DropZoneContent {
-        let muted = |text: &str, size: f32| ui.painter().layout_no_wrap(text.to_owned(), theme::font(Weight::Regular, size), theme::UI_MUTED);
+        let muted = |text: &str, size: f32| {
+            ui.painter().layout_no_wrap(text.to_owned(), theme::font(Weight::Regular, size), theme::UI_MUTED)
+        };
         if self.compact {
             let title = single_line(ui, self.title, theme::font(Weight::Regular, 12.5), theme::UI_TEXT, width - 22.0);
             return DropZoneContent { title, browse: None, hint: None };
@@ -707,9 +738,16 @@ impl<'a> DropZone<'a> {
         let title = single_line(ui, self.title, theme::font(Weight::SemiBold, 13.0), theme::UI_TEXT, width);
         let mut browse = LayoutJob::default();
         browse.append("or ", 0.0, TextFormat::simple(theme::font(Weight::Regular, 12.0), theme::UI_MUTED));
-        let link = TextFormat { underline: Stroke::new(1.0, theme::UI_TEXT), ..TextFormat::simple(theme::font(Weight::Regular, 12.0), theme::UI_TEXT) };
+        let link = TextFormat {
+            underline: Stroke::new(1.0, theme::UI_TEXT),
+            ..TextFormat::simple(theme::font(Weight::Regular, 12.0), theme::UI_TEXT)
+        };
         browse.append("browse files", 0.0, link);
-        DropZoneContent { title, browse: Some(ui.painter().layout_job(browse)), hint: self.hint.map(|h| muted(h, 11.0)) }
+        DropZoneContent {
+            title,
+            browse: Some(ui.painter().layout_job(browse)),
+            hint: self.hint.map(|h| muted(h, 11.0)),
+        }
     }
 }
 
@@ -735,7 +773,8 @@ impl Widget for DropZone<'_> {
 
         let painter = ui.painter();
         let active = response.enabled() && (self.highlight || response.hovered());
-        let (border, icon) = if active { (theme::ACCENT, theme::ACCENT) } else { (theme::UI_LINE_STRONG, theme::UI_MUTED) };
+        let (border, icon) =
+            if active { (theme::ACCENT, theme::ACCENT) } else { (theme::UI_LINE_STRONG, theme::UI_MUTED) };
         if active {
             painter.rect_filled(rect, 10.0, theme::alpha(theme::ACCENT, 0.06));
         }
@@ -756,14 +795,26 @@ fn paint_compact_drop_zone(painter: &Painter, rect: Rect, title: Arc<Galley>, ic
     const ICON: f32 = 16.0;
     let total = ICON + 6.0 + title.size().x;
     let left = rect.center().x - total / 2.0;
-    paint_icon(painter, Rect::from_center_size(pos2(left + ICON / 2.0, rect.center().y), Vec2::splat(ICON)), Icon::Upload, icon_color, 1.8);
+    paint_icon(
+        painter,
+        Rect::from_center_size(pos2(left + ICON / 2.0, rect.center().y), Vec2::splat(ICON)),
+        Icon::Upload,
+        icon_color,
+        1.8,
+    );
     let text_rect = Rect::from_x_y_ranges(left + ICON + 6.0..=rect.right(), rect.y_range());
     paint_galley(painter, text_rect, Align2::LEFT_CENTER, title, theme::UI_TEXT);
 }
 
 fn paint_full_drop_zone(painter: &Painter, inner: Rect, content: DropZoneContent, icon_color: Color32) {
     let line = |top: f32, height: f32| Rect::from_x_y_ranges(inner.x_range(), top..=top + height);
-    paint_icon(painter, Rect::from_center_size(pos2(inner.center().x, inner.top() + 10.0), Vec2::splat(20.0)), Icon::Upload, icon_color, 1.8);
+    paint_icon(
+        painter,
+        Rect::from_center_size(pos2(inner.center().x, inner.top() + 10.0), Vec2::splat(20.0)),
+        Icon::Upload,
+        icon_color,
+        1.8,
+    );
     let mut y = inner.top() + 20.0 + 3.0 + 3.0;
     paint_galley(painter, line(y, LINE), Align2::CENTER_CENTER, content.title, theme::UI_TEXT);
     y += LINE + 3.0;
@@ -784,6 +835,125 @@ fn dashed_rect(painter: &Painter, rect: Rect, radius: f32, stroke: Stroke) {
         points.push(first);
     }
     painter.extend(Shape::dashed_line(&points, stroke, 4.0, 3.0));
+}
+
+// ---- Shortcut picker ----
+
+/// A global-shortcut picker: shows the current combination; click it, then press the
+/// new one (Esc cancels). Returns the new shortcut, in `global-hotkey` syntax
+/// (`Ctrl+Alt+Shift+O`), in the frame it's chosen.
+pub fn shortcut_field(ui: &mut Ui, current: &str) -> Option<String> {
+    let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+    let id = response.id;
+    let mut capturing = ui.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
+    if response.clicked() {
+        capturing = !capturing;
+    } else if response.clicked_elsewhere() {
+        capturing = false;
+    }
+    let mut chosen = None;
+    if capturing {
+        if ui.input_mut(|i| i.consume_key(eframe::egui::Modifiers::NONE, Key::Escape)) {
+            capturing = false;
+        } else if let Some(spec) = ui.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                eframe::egui::Event::Key { key, pressed: true, modifiers, .. } => shortcut_spec(*key, *modifiers),
+                _ => None,
+            })
+        }) {
+            chosen = Some(spec);
+            capturing = false;
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(id, capturing));
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, ui.is_enabled(), current));
+
+    let painter = ui.painter();
+    let (fill, border) = if capturing {
+        (theme::alpha(theme::ACCENT, 0.1), theme::ACCENT)
+    } else if hot(&response) {
+        (white(0.08), theme::UI_LINE_STRONG)
+    } else {
+        (theme::UI_RAISED, theme::UI_LINE_STRONG)
+    };
+    painter.rect(rect, 7.0, fill, Stroke::new(1.0, border), StrokeKind::Inside);
+    let inner = rect.shrink2(vec2(12.0, 0.0));
+    let (text, color) = if capturing { ("Press a shortcut…", theme::UI_MUTED) } else { (current, theme::UI_TEXT) };
+    let galley = single_line(ui, text, theme::font(Weight::SemiBold, 12.5), color, inner.width() - 60.0);
+    paint_galley(painter, inner, Align2::LEFT_CENTER, galley, color);
+    let side = if capturing { "Esc cancels" } else { "Change" };
+    let side = single_line(ui, side, theme::font(Weight::Regular, 12.0), theme::UI_MUTED, 60.0);
+    paint_galley(painter, inner, Align2::RIGHT_CENTER, side, theme::UI_MUTED);
+    if response.has_focus() {
+        focus_ring(painter, rect, 7.0, 1.0);
+    }
+    if capturing {
+        ui.ctx().request_repaint();
+    }
+    chosen
+}
+
+/// A key press as a shortcut (`Ctrl+Shift+F10`), or `None` for keys a global shortcut
+/// can't use. Letters and other typing keys need Ctrl or Alt, so the shortcut never
+/// swallows ordinary typing.
+pub fn shortcut_spec(key: Key, m: eframe::egui::Modifiers) -> Option<String> {
+    let name = shortcut_key_name(key)?;
+    let function_key = matches!(
+        key,
+        Key::F1
+            | Key::F2
+            | Key::F3
+            | Key::F4
+            | Key::F5
+            | Key::F6
+            | Key::F7
+            | Key::F8
+            | Key::F9
+            | Key::F10
+            | Key::F11
+            | Key::F12
+    );
+    if !(m.ctrl || m.alt || function_key) {
+        return None;
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    if m.ctrl {
+        parts.push("Ctrl");
+    }
+    if m.alt {
+        parts.push("Alt");
+    }
+    if m.shift {
+        parts.push("Shift");
+    }
+    parts.push(name);
+    Some(parts.join("+"))
+}
+
+/// Key names `global-hotkey` understands.
+fn shortcut_key_name(key: Key) -> Option<&'static str> {
+    Some(match key {
+        Key::Equals => "Equal",
+        Key::OpenBracket => "BracketLeft",
+        Key::CloseBracket => "BracketRight",
+        Key::Backtick => "Backquote",
+        Key::ArrowUp => "ArrowUp",
+        Key::ArrowDown => "ArrowDown",
+        Key::ArrowLeft => "ArrowLeft",
+        Key::ArrowRight => "ArrowRight",
+        Key::Minus | Key::Backslash | Key::Semicolon | Key::Quote | Key::Comma | Key::Period | Key::Slash => key.name(),
+        Key::Space | Key::Insert | Key::Delete | Key::Home | Key::End | Key::PageUp | Key::PageDown => key.name(),
+        _ => {
+            let name = key.name();
+            let letter_or_digit = name.len() == 1 && name.chars().all(|c| c.is_ascii_alphanumeric());
+            let function =
+                name.strip_prefix('F').and_then(|n| n.parse::<u8>().ok()).is_some_and(|n| (1..=12).contains(&n));
+            if !(letter_or_digit || function) {
+                return None;
+            }
+            name
+        }
+    })
 }
 
 #[cfg(test)]
@@ -815,5 +985,18 @@ mod tests {
     fn white_tints_are_premultiplied() {
         assert_eq!(white(0.08), Color32::from_rgba_unmultiplied(255, 255, 255, 20));
         assert_eq!(white(2.0), Color32::WHITE);
+    }
+
+    #[test]
+    fn shortcuts_need_ctrl_or_alt_except_function_keys() {
+        use eframe::egui::Modifiers;
+        let ctrl_alt_shift = Modifiers { ctrl: true, alt: true, shift: true, ..Default::default() };
+        assert_eq!(shortcut_spec(Key::O, ctrl_alt_shift).as_deref(), Some("Ctrl+Alt+Shift+O"));
+        assert_eq!(shortcut_spec(Key::F10, Modifiers::SHIFT).as_deref(), Some("Shift+F10"));
+        assert_eq!(shortcut_spec(Key::F9, Modifiers::NONE).as_deref(), Some("F9"));
+        assert_eq!(shortcut_spec(Key::Backtick, Modifiers::CTRL).as_deref(), Some("Ctrl+Backquote"));
+        assert_eq!(shortcut_spec(Key::O, Modifiers::SHIFT), None);
+        assert_eq!(shortcut_spec(Key::Escape, Modifiers::CTRL), None);
+        assert_eq!(shortcut_spec(Key::F20, Modifiers::CTRL), None);
     }
 }

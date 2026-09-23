@@ -40,7 +40,12 @@ pub struct LibraryEntry {
 
 impl LibraryEntry {
     pub fn ref_info(&self) -> RefInfo<'_> {
-        RefInfo { track: self.track.as_deref(), car: self.car.as_deref(), length_m: self.length_m, start_latlon: self.start_latlon }
+        RefInfo {
+            track: self.track.as_deref(),
+            car: self.car.as_deref(),
+            length_m: self.length_m,
+            start_latlon: self.start_latlon,
+        }
     }
 
     pub fn status(&self, session: Option<&SessionInfo>) -> MatchStatus {
@@ -132,7 +137,13 @@ impl Library {
 
     /// Validates a lap, copies it into `laps_dir`, adds (or refreshes) its entry and
     /// makes it the active reference.
-    pub fn import_bytes(&mut self, laps_dir: &Path, file_name: &str, bytes: &[u8], now: u64) -> Result<(LibraryEntry, Lap), ImportError> {
+    pub fn import_bytes(
+        &mut self,
+        laps_dir: &Path,
+        file_name: &str,
+        bytes: &[u8],
+        now: u64,
+    ) -> Result<(LibraryEntry, Lap), ImportError> {
         let text = std::str::from_utf8(bytes).map_err(|_| ImportError::NotText)?;
         let lap = parse_garage61_csv(text, file_name).map_err(ImportError::Lap)?;
         let id = content_id(bytes);
@@ -164,7 +175,9 @@ impl Library {
 
     /// Parses a saved lap.
     pub fn load_lap(&self, laps_dir: &Path, id: &str) -> Result<Lap, ImportError> {
-        let entry = self.get(id).ok_or_else(|| ImportError::Io(io::Error::new(io::ErrorKind::NotFound, "lap not in library")))?;
+        let entry = self
+            .get(id)
+            .ok_or_else(|| ImportError::Io(io::Error::new(io::ErrorKind::NotFound, "lap not in library")))?;
         let text = std::fs::read_to_string(laps_dir.join(&entry.file))?;
         parse_garage61_csv(&text, &entry.original_name).map_err(ImportError::Lap)
     }
@@ -220,10 +233,15 @@ mod tests {
     use super::*;
 
     const SAMPLE: &[u8] = include_bytes!("../assets/sample-laps/silverstone-gp-ferrari-296-gt3.csv");
-    const NAME: &str = "Garage 61 - Sample Lap - Ferrari 296 GT3 - Silverstone Circuit (Grand Prix) - 01.55.992 - SAMPLE.csv";
+    const NAME: &str =
+        "Garage 61 - Sample Lap - Ferrari 296 GT3 - Silverstone Circuit (Grand Prix) - 01.55.992 - SAMPLE.csv";
 
     fn session(car: &str) -> SessionInfo {
-        SessionInfo { car_name: Some(car.into()), car_short_name: None, ..crate::demo::demo_session(&crate::demo::sample_lap()) }
+        SessionInfo {
+            car_name: Some(car.into()),
+            car_short_name: None,
+            ..crate::demo::demo_session(&crate::demo::sample_lap())
+        }
     }
 
     #[test]
@@ -280,8 +298,12 @@ mod tests {
         assert_eq!(lib.best_for(&session("Porsche 911 GT3 R (992)")).map(|e| &e.id), Some(&porsche.id));
         assert!(lib.best_for(&session("BMW M4 GT3")).is_none());
 
-        let order: Vec<_> = lib.sorted_for(Some(&session("Ferrari 296 GT3"))).iter().map(|(e, s)| (e.id.clone(), *s)).collect();
-        assert_eq!(order, vec![(ferrari.id.clone(), MatchStatus::Match), (porsche.id.clone(), MatchStatus::DifferentCar)]);
+        let order: Vec<_> =
+            lib.sorted_for(Some(&session("Ferrari 296 GT3"))).iter().map(|(e, s)| (e.id.clone(), *s)).collect();
+        assert_eq!(
+            order,
+            vec![(ferrari.id.clone(), MatchStatus::Match), (porsche.id.clone(), MatchStatus::DifferentCar)]
+        );
 
         lib.set_active(Some(&ferrari.id), 30);
         assert_eq!(lib.active_entry().unwrap().last_used, 30);

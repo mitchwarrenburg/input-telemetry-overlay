@@ -39,11 +39,38 @@ const ANCHOR_FILL: Color32 = Color32::from_rgb(0x0b, 0x11, 0x10);
 
 /// The prototype's gear outline (24 × 24 view box): eight teeth around a ring.
 const GEAR_OUTLINE: [(f32, f32); 32] = [
-    (9.97, 4.68), (10.27, 1.95), (13.73, 1.95), (14.03, 4.68), (15.75, 5.39), (17.89, 3.67), (20.33, 6.11),
-    (18.61, 8.25), (19.32, 9.97), (22.05, 10.27), (22.05, 13.73), (19.32, 14.03), (18.61, 15.75), (20.33, 17.89),
-    (17.89, 20.33), (15.75, 18.61), (14.03, 19.32), (13.73, 22.05), (10.27, 22.05), (9.97, 19.32), (8.25, 18.61),
-    (6.11, 20.33), (3.67, 17.89), (5.39, 15.75), (4.68, 14.03), (1.95, 13.73), (1.95, 10.27), (4.68, 9.97),
-    (5.39, 8.25), (3.67, 6.11), (6.11, 3.67), (8.25, 5.39),
+    (9.97, 4.68),
+    (10.27, 1.95),
+    (13.73, 1.95),
+    (14.03, 4.68),
+    (15.75, 5.39),
+    (17.89, 3.67),
+    (20.33, 6.11),
+    (18.61, 8.25),
+    (19.32, 9.97),
+    (22.05, 10.27),
+    (22.05, 13.73),
+    (19.32, 14.03),
+    (18.61, 15.75),
+    (20.33, 17.89),
+    (17.89, 20.33),
+    (15.75, 18.61),
+    (14.03, 19.32),
+    (13.73, 22.05),
+    (10.27, 22.05),
+    (9.97, 19.32),
+    (8.25, 18.61),
+    (6.11, 20.33),
+    (3.67, 17.89),
+    (5.39, 15.75),
+    (4.68, 14.03),
+    (1.95, 13.73),
+    (1.95, 10.27),
+    (4.68, 9.97),
+    (5.39, 8.25),
+    (3.67, 6.11),
+    (6.11, 3.67),
+    (8.25, 5.39),
 ];
 const GEAR_HOLE_R: f32 = 3.2;
 const GEAR_STROKE: f32 = 1.7;
@@ -296,8 +323,10 @@ impl LegendItem {
             LegendKeys::Lines => vec2(10.0, 2.0),
             LegendKeys::Fills => vec2(7.0, 9.0),
         };
-        let key_rect =
-            Rect::from_min_size(pos2(left, center_y - key_size.y / 2.0), vec2(2.0 * key_size.x + Self::KEY_GAP, key_size.y));
+        let key_rect = Rect::from_min_size(
+            pos2(left, center_y - key_size.y / 2.0),
+            vec2(2.0 * key_size.x + Self::KEY_GAP, key_size.y),
+        );
         let text_pos = pos2(key_rect.right() + Self::TEXT_GAP, center_y - galley.size().y / 2.0);
         Self { keys, key_rect, text_pos, galley }
     }
@@ -309,7 +338,10 @@ impl LegendItem {
     fn paint(&self, painter: &Painter) {
         let w = (self.key_rect.width() - Self::KEY_GAP) / 2.0;
         for (i, color) in [theme::THROTTLE, theme::BRAKE].into_iter().enumerate() {
-            let key = Rect::from_min_size(self.key_rect.min + vec2(i as f32 * (w + Self::KEY_GAP), 0.0), vec2(w, self.key_rect.height()));
+            let key = Rect::from_min_size(
+                self.key_rect.min + vec2(i as f32 * (w + Self::KEY_GAP), 0.0),
+                vec2(w, self.key_rect.height()),
+            );
             match self.keys {
                 LegendKeys::Lines => {
                     painter.rect_filled(key, CornerRadius::same(1), color);
@@ -362,7 +394,8 @@ impl HeaderLayout {
         let title = title_galley(painter, header.width());
         let title_pos = pos2(header.left() + PAD_LEFT, cy - title.size().y / 2.0);
         let title_right = title_pos.x + title.size().x;
-        let gear = Rect::from_center_size(pos2(header.right() - PAD_RIGHT - GEAR_SIZE / 2.0, cy), Vec2::splat(GEAR_SIZE));
+        let gear =
+            Rect::from_center_size(pos2(header.right() - PAD_RIGHT - GEAR_SIZE / 2.0, cy), Vec2::splat(GEAR_SIZE));
 
         let badges = place_badges(painter, chrome.badges, gear.left() - 8.0, title_right + ITEM_GAP, cy);
         let right_limit = badges.last().map_or(gear.left(), |(r, _)| r.left()) - ITEM_GAP;

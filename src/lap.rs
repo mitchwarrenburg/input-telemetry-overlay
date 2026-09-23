@@ -340,7 +340,9 @@ mod tests {
 
     #[test]
     fn older_and_redownloaded_names_parse() {
-        let m = parse_file_name("Garage_61__A_Driver__Ford_Mustang_GT4__Summit_Point_Raceway__01.27.017__01K5AAAAAAAAAAAAAAAAAAAAAA.csv");
+        let m = parse_file_name(
+            "Garage_61__A_Driver__Ford_Mustang_GT4__Summit_Point_Raceway__01.27.017__01K5AAAAAAAAAAAAAAAAAAAAAA.csv",
+        );
         assert_eq!(m.driver.as_deref(), Some("A Driver"));
         assert_eq!(m.car.as_deref(), Some("Ford Mustang GT4"));
         assert_eq!(m.track.as_deref(), Some("Summit Point Raceway"));

@@ -67,7 +67,7 @@ impl Desktop {
         Self { ctx: ctx.clone(), tx, rx, tray, hotkeys, hotkey: None }
     }
 
-    /// Registers the lock/unlock shortcut (e.g. `Ctrl+Shift+O`), replacing the previous
+    /// Registers the lock/unlock shortcut (e.g. `Ctrl+Alt+Shift+O`), replacing the previous
     /// one. The error is written for the settings window.
     pub fn set_hotkey(&mut self, spec: &str) -> Result<(), String> {
         let result = self.register_hotkey(spec);
@@ -88,7 +88,7 @@ impl Desktop {
         let hotkey: HotKey = spec.parse().map_err(|_| format!("“{spec}” isn't a shortcut the overlay understands."))?;
         manager.register(hotkey).map_err(|e| match e {
             global_hotkey::Error::AlreadyRegistered(_) => {
-                format!("Another app already uses {spec}, so it can't lock the overlay. Use the tray icon instead.")
+                format!("Another app already uses {spec}. Pick another shortcut, or use the tray icon.")
             }
             e => format!("Couldn't set up {spec} ({e}). Use the tray icon to lock the overlay."),
         })?;
@@ -236,13 +236,20 @@ pub fn keep_no_activate(window: &impl HasWindowHandle) {
 /// Re-enables DWM blur-behind with an empty region, which keeps transparent OpenGL
 /// windows transparent on AMD drivers (egui#4451).
 pub fn fix_transparency(window: &impl HasWindowHandle) {
-    use windows_sys::Win32::Graphics::Dwm::{DWM_BB_BLURREGION, DWM_BB_ENABLE, DWM_BLURBEHIND, DwmEnableBlurBehindWindow};
+    use windows_sys::Win32::Graphics::Dwm::{
+        DWM_BB_BLURREGION, DWM_BB_ENABLE, DWM_BLURBEHIND, DwmEnableBlurBehindWindow,
+    };
     use windows_sys::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject};
     let Some(hwnd) = hwnd(window) else { return };
     // SAFETY: the region is created, handed to DWM (which copies it) and freed here.
     unsafe {
         let region = CreateRectRgn(0, 0, -1, -1);
-        let blur = DWM_BLURBEHIND { dwFlags: DWM_BB_ENABLE | DWM_BB_BLURREGION, fEnable: 1, hRgnBlur: region, fTransitionOnMaximized: 0 };
+        let blur = DWM_BLURBEHIND {
+            dwFlags: DWM_BB_ENABLE | DWM_BB_BLURREGION,
+            fEnable: 1,
+            hRgnBlur: region,
+            fTransitionOnMaximized: 0,
+        };
         let hr = DwmEnableBlurBehindWindow(hwnd, &blur);
         if hr < 0 {
             log::warn!("DwmEnableBlurBehindWindow failed: {hr:#x}");
@@ -256,8 +263,8 @@ pub fn fix_transparency(window: &impl HasWindowHandle) {
 /// immediate viewports.
 pub fn capture_screen(x: i32, y: i32, w: i32, h: i32) -> Option<ColorImage> {
     use windows_sys::Win32::Graphics::Gdi::{
-        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleBitmap, CreateCompatibleDC, DIB_RGB_COLORS,
-        DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SRCCOPY, SelectObject,
+        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleBitmap, CreateCompatibleDC,
+        DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SRCCOPY, SelectObject,
     };
     if w <= 0 || h <= 0 {
         return None;
@@ -282,8 +289,11 @@ pub fn capture_screen(x: i32, y: i32, w: i32, h: i32) -> Option<ColorImage> {
             biCompression: BI_RGB,
             ..std::mem::zeroed()
         };
-        let lines =
-            if copied { GetDIBits(mem, bitmap, 0, h as u32, bgra.as_mut_ptr().cast(), &mut info, DIB_RGB_COLORS) } else { 0 };
+        let lines = if copied {
+            GetDIBits(mem, bitmap, 0, h as u32, bgra.as_mut_ptr().cast(), &mut info, DIB_RGB_COLORS)
+        } else {
+            0
+        };
         DeleteObject(bitmap);
         DeleteDC(mem);
         ReleaseDC(std::ptr::null_mut(), screen);

@@ -27,7 +27,12 @@ pub struct LiveFeed {
 
 impl Default for LiveFeed {
     fn default() -> Self {
-        Self { trace: LiveTrace::new(), tracker: DistanceTracker::new(), track_length: FALLBACK_TRACK_LENGTH_M, now: None }
+        Self {
+            trace: LiveTrace::new(),
+            tracker: DistanceTracker::new(),
+            track_length: FALLBACK_TRACK_LENGTH_M,
+            now: None,
+        }
     }
 }
 

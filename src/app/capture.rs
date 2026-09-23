@@ -57,7 +57,12 @@ impl Screenshots {
 
     /// `None` when neither screenshot was asked for.
     pub fn new(overlay: Option<PathBuf>, settings: Option<PathBuf>) -> Option<Self> {
-        (overlay.is_some() || settings.is_some()).then(|| Self { overlay, settings, started: Instant::now(), requested: false })
+        (overlay.is_some() || settings.is_some()).then(|| Self {
+            overlay,
+            settings,
+            started: Instant::now(),
+            requested: false,
+        })
     }
 
     /// Call every overlay frame. `settings_px` is the settings window's screen rectangle
@@ -95,7 +100,9 @@ impl Screenshots {
 fn root_screenshot(ctx: &egui::Context) -> Option<std::sync::Arc<ColorImage>> {
     ctx.input(|i| {
         i.events.iter().find_map(|e| match e {
-            egui::Event::Screenshot { viewport_id, image, .. } if *viewport_id == ViewportId::ROOT => Some(image.clone()),
+            egui::Event::Screenshot { viewport_id, image, .. } if *viewport_id == ViewportId::ROOT => {
+                Some(image.clone())
+            }
             _ => None,
         })
     })

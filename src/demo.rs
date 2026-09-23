@@ -71,15 +71,8 @@ pub struct SimulatedDriver {
 
 impl SimulatedDriver {
     pub fn new(lap: Arc<Lap>, seed: u32) -> Self {
-        let mut d = Self {
-            lap,
-            rng: Rng(seed),
-            t: 0.0,
-            lap_start: 0.0,
-            lap_index: 0,
-            brake: Vec::new(),
-            throttle: Vec::new(),
-        };
+        let mut d =
+            Self { lap, rng: Rng(seed), t: 0.0, lap_start: 0.0, lap_index: 0, brake: Vec::new(), throttle: Vec::new() };
         d.vary();
         d
     }
@@ -182,7 +175,10 @@ mod tests {
     fn sample_lap_and_session_line_up() {
         let lap = sample_lap();
         let s = demo_session(&lap);
-        assert_eq!(crate::matching::status(&crate::matching::RefInfo::from_lap(&lap), Some(&s)), crate::matching::MatchStatus::Match);
+        assert_eq!(
+            crate::matching::status(&crate::matching::RefInfo::from_lap(&lap), Some(&s)),
+            crate::matching::MatchStatus::Match
+        );
     }
 
     #[test]

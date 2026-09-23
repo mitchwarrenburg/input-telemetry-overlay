@@ -6,9 +6,10 @@
 //!   overlays) keep open after the sim closed, so the sim only counts as live once
 //!   `SessionTick` moves;
 //! - it waits on `Local\IRSDKDataValidEventName`, but iRacing creates
-//!   `Local\IRSDKDataValidEvent`, so it falls back to polling every 16 ms and hands back the
-//!   last frame again when the sim froze or crashed; with no staleness timeout of its own,
-//!   the thread gives up after 5 s without a new tick;
+//!   `Local\IRSDKDataValidEvent`, so on its own it polls every 16 ms. The thread waits on
+//!   the real event itself and asks kerb for the frame without waiting. kerb also hands back
+//!   the last frame again when the sim froze or crashed; with no staleness timeout of its
+//!   own, the thread gives up after 5 s without a new tick;
 //! - its strict YAML parse fails in public lobbies (`UserName: *Speedy`), so
 //!   [`parse_session_yaml`] line-scans the raw session text instead.
 
@@ -277,6 +278,8 @@ mod live {
 
     use kerb::iracing::{IRsdkConnection, IracingFrame};
     use kerb::{Connection, ReadResult, SimConnection, SimType};
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{OpenEventW, WaitForSingleObject};
 
     use super::{Shared, parse_session_yaml};
     use crate::telemetry::{SessionInfo, TelemetryEvent, TelemetryFrame};
@@ -318,11 +321,22 @@ mod live {
     fn read_connection(conn: &IRsdkConnection, out: &mut Outbox) {
         let mut ticks = TickWatch::new(Instant::now());
         let mut session = SessionWatch::default();
+        let mut event = None;
         let ended = loop {
             if out.stopped() {
                 break "reader stopped";
             }
-            let result = conn.read_frame(READ_TIMEOUT_MS);
+            // The sim creates the event when it starts broadcasting.
+            if event.is_none() {
+                event = DataValidEvent::open();
+            }
+            let result = match &event {
+                Some(ev) => {
+                    ev.wait(READ_TIMEOUT_MS);
+                    conn.read_frame(0)
+                }
+                None => conn.read_frame(READ_TIMEOUT_MS),
+            };
             let now = Instant::now();
             match result {
                 ReadResult::Frame(f) => match ticks.observe(f.session_tick, now) {
@@ -348,6 +362,32 @@ mod live {
             log::info!("iRacing disconnected ({ended})");
             out.send(TelemetryEvent::Disconnected);
             out.wake_app();
+        }
+    }
+
+    /// iRacing's "new data" event, which it signals for every frame it publishes.
+    struct DataValidEvent(HANDLE);
+
+    impl DataValidEvent {
+        fn open() -> Option<Self> {
+            const SYNCHRONIZE: u32 = 0x0010_0000;
+            let name: Vec<u16> = "Local\\IRSDKDataValidEvent\0".encode_utf16().collect();
+            // SAFETY: `name` is a NUL-terminated UTF-16 string that outlives the call.
+            let handle = unsafe { OpenEventW(SYNCHRONIZE, 0, name.as_ptr()) };
+            (!handle.is_null()).then_some(Self(handle))
+        }
+
+        /// Waits up to `ms` for the next frame; `false` on timeout.
+        fn wait(&self, ms: u32) -> bool {
+            // SAFETY: the handle is valid until drop.
+            unsafe { WaitForSingleObject(self.0, ms) == WAIT_OBJECT_0 }
+        }
+    }
+
+    impl Drop for DataValidEvent {
+        fn drop(&mut self) {
+            // SAFETY: we own the handle and close it once.
+            unsafe { CloseHandle(self.0) };
         }
     }
 

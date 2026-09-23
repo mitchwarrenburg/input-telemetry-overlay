@@ -43,6 +43,8 @@ pub struct PanelContext<'a> {
     pub active_id: Option<&'a str>,
     /// Last import/load error to show in the Reference tab.
     pub error: Option<&'a str>,
+    /// Why the unlock shortcut couldn't be registered, shown under it.
+    pub hotkey_error: Option<&'a str>,
     pub connection: ConnectionState,
     /// A file dialog is open (disable Browse).
     pub browsing: bool,
@@ -144,7 +146,7 @@ fn tab_body(ui: &mut Ui, settings: &mut Settings, cx: &PanelContext, actions: &m
         ui.set_width(WIDTH - 2.0 * PAD_X);
         ui.spacing_mut().item_spacing.y = GAP;
         match settings.tab {
-            SettingsTab::Display => display_tab(ui, settings, actions),
+            SettingsTab::Display => display_tab(ui, settings, cx, actions),
             SettingsTab::Labels => labels_tab(ui, settings),
             SettingsTab::Timing => timing_tab(ui, settings),
             SettingsTab::Reference => reference_tab(ui, settings, cx, actions),
@@ -174,7 +176,7 @@ fn row<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
 
 // ---- Display ----
 
-fn display_tab(ui: &mut Ui, s: &mut Settings, actions: &mut Vec<PanelAction>) {
+fn display_tab(ui: &mut Ui, s: &mut Settings, cx: &PanelContext, actions: &mut Vec<PanelAction>) {
     section(ui, "Opacity");
     ui.add(Slider::new("Background", &mut s.bg_opacity, 0.0..=100.0).unit("%"));
     ui.add(Slider::new("Reference fill", &mut s.ref_opacity, 0.0..=100.0).unit("%"));
@@ -182,6 +184,15 @@ fn display_tab(ui: &mut Ui, s: &mut Settings, actions: &mut Vec<PanelAction>) {
     section(ui, "Layout");
     let lock_hint = format!("Click-through. Unlock with {} or the tray icon", s.unlock_hotkey);
     ui.add(Switch::new(&mut s.locked, "Lock size & position").hint(&lock_hint));
+    row(ui, |ui| {
+        widgets::row_label(ui, "Lock / unlock shortcut");
+        if let Some(spec) = widgets::shortcut_field(ui, &s.unlock_hotkey) {
+            s.unlock_hotkey = spec;
+        }
+        if let Some(e) = cx.hotkey_error {
+            widgets::error_text(ui, e);
+        }
+    });
     ui.add(Switch::new(&mut s.demo_when_idle, "Demo when iRacing isn't running"));
     if ui.add(Button::new("Reset size & position").fill_width()).clicked() {
         actions.push(PanelAction::ResetLayout);
@@ -503,7 +514,10 @@ fn lap_row(ui: &mut Ui, entry: &LibraryEntry, status: MatchStatus, active: bool,
     row.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, ui.is_enabled(), active, &driver));
     paint_row_background(ui.painter(), &row, active);
     let remove = remove_button(ui, rect, confirming);
-    let content = Rect::from_min_max(pos2(rect.left() + 10.0, rect.top() + 7.0), pos2(remove.rect.left() - 8.0, rect.bottom() - 7.0));
+    let content = Rect::from_min_max(
+        pos2(rect.left() + 10.0, rect.top() + 7.0),
+        pos2(remove.rect.left() - 8.0, rect.bottom() - 7.0),
+    );
     paint_row_text(ui, content, entry, &driver, status);
 
     match (remove.clicked(), confirming, row.clicked()) {
@@ -544,7 +558,8 @@ fn paint_row_text(ui: &Ui, content: Rect, entry: &LibraryEntry, driver: &str, st
     let top = Rect::from_min_size(content.min, vec2(content.width(), 17.0));
     let bottom = Rect::from_x_y_ranges(content.x_range(), top.bottom()..=content.bottom());
 
-    let time = painter.layout_no_wrap(format_lap_time(entry.lap_time), theme::font(Weight::SemiBold, 13.0), theme::UI_TEXT);
+    let time =
+        painter.layout_no_wrap(format_lap_time(entry.lap_time), theme::font(Weight::SemiBold, 13.0), theme::UI_TEXT);
     let name_width = top.width() - time.size().x - 8.0;
     let name = widgets::single_line(ui, driver, theme::font(Weight::SemiBold, 13.0), theme::UI_TEXT, name_width);
     widgets::paint_galley(painter, top, Align2::LEFT_CENTER, name, theme::UI_TEXT);
@@ -553,7 +568,8 @@ fn paint_row_text(ui: &Ui, content: Rect, entry: &LibraryEntry, driver: &str, st
     let chip = StatusChip::short(ui, status);
     let chip_width = chip.as_ref().map_or(0.0, |c| c.width() + 8.0);
     let place = car_and_track(entry.car.as_deref(), entry.track.as_deref()).unwrap_or_default();
-    let mut job = LayoutJob::single_section(place, TextFormat::simple(theme::font(Weight::Regular, 11.5), theme::UI_MUTED));
+    let mut job =
+        LayoutJob::single_section(place, TextFormat::simple(theme::font(Weight::Regular, 11.5), theme::UI_MUTED));
     job.wrap = TextWrapping::truncate_at_width(bottom.width() - chip_width);
     widgets::paint_galley(painter, bottom, Align2::LEFT_CENTER, painter.layout_job(job), theme::UI_MUTED);
     if let Some(chip) = chip {
@@ -591,7 +607,8 @@ fn foot(ui: &mut Ui, connection: ConnectionState, actions: &mut Vec<PanelAction>
     // 1 px line, padding 9 / 11 around a 17 px line, 1 px border.
     let (rect, _) = ui.allocate_exact_size(vec2(WIDTH, 1.0 + 9.0 + LINE_SMALL + 11.0 + 1.0), Sense::hover());
     ui.painter().hline(rect.x_range().shrink(1.0), rect.top() + 0.5, Stroke::new(1.0, theme::UI_LINE));
-    let content = Rect::from_min_size(pos2(rect.left() + PAD_X, rect.top() + 10.0), vec2(WIDTH - 2.0 * PAD_X, LINE_SMALL));
+    let content =
+        Rect::from_min_size(pos2(rect.left() + PAD_X, rect.top() + 10.0), vec2(WIDTH - 2.0 * PAD_X, LINE_SMALL));
     let mut line = ui.new_child(UiBuilder::new().max_rect(content).layout(Layout::left_to_right(Align::Center)));
     if line.add(Link::new("Reset to defaults")).clicked() {
         actions.push(PanelAction::ResetAll);
@@ -644,7 +661,14 @@ mod tests {
             laps: vec![
                 entry("a", "Ada", "Ferrari 296 GT3", "Silverstone Circuit (Grand Prix)", 5786.4, silverstone),
                 entry("b", "Ben", "Porsche 911 GT3 R (992)", "Silverstone Circuit (Grand Prix)", 5786.4, silverstone),
-                entry("c", "Cy", "Ferrari 296 GT3", "Circuit de Spa-Francorchamps (Grand Prix Pits)", 6990.0, (50.437, 5.971)),
+                entry(
+                    "c",
+                    "Cy",
+                    "Ferrari 296 GT3",
+                    "Circuit de Spa-Francorchamps (Grand Prix Pits)",
+                    6990.0,
+                    (50.437, 5.971),
+                ),
             ],
             active: Some("a".into()),
         }
@@ -658,6 +682,7 @@ mod tests {
             reference: None,
             active_id: None,
             error: None,
+            hotkey_error: None,
             connection: ConnectionState::Waiting,
             browsing: false,
             file_hover: false,
@@ -703,7 +728,13 @@ mod tests {
     }
 
     fn escape() -> Vec<egui::Event> {
-        vec![egui::Event::Key { key: Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() }]
+        vec![egui::Event::Key {
+            key: Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }]
     }
 
     #[test]
@@ -728,6 +759,7 @@ mod tests {
                     reference: reference.then_some((&lap, status)),
                     active_id,
                     error,
+                    hotkey_error: error,
                     connection: ConnectionState::Live,
                     browsing: error.is_some(),
                     file_hover: error.is_some(),
@@ -745,9 +777,9 @@ mod tests {
     fn display_tab_is_as_tall_as_the_prototype_plus_its_extra_rows() {
         let lib = Library::default();
         let out = Harness::run(&mut Settings::default(), &bare(&lib), Vec::new());
-        // Prototype: 378 px. Here the demo switch adds a row (18 + 13) and the lock
-        // hint a second line (17).
-        assert!((out.desired_height - (378.0 + 31.0 + 17.0)).abs() <= 3.0, "{}", out.desired_height);
+        // Prototype: 378 px. Here the demo switch adds a row (18 + 13), the lock hint a
+        // second line (17) and the shortcut picker a labelled row (13 + 18 + 6 + 30).
+        assert!((out.desired_height - (378.0 + 31.0 + 17.0 + 67.0)).abs() <= 3.0, "{}", out.desired_height);
     }
 
     #[test]

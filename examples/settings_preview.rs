@@ -128,10 +128,14 @@ struct Track {
     start: (f64, f64),
 }
 
-const SILVERSTONE_GP: Track = Track { name: "Silverstone Circuit (Grand Prix)", length_m: 5786.4, start: (52.0683531, -1.0235284) };
-const SILVERSTONE_NATIONAL: Track = Track { name: "Silverstone Circuit (National)", length_m: 2638.0, start: SILVERSTONE_GP.start };
-const SPA: Track = Track { name: "Circuit de Spa-Francorchamps (Grand Prix Pits)", length_m: 6990.0, start: (50.4372, 5.9714) };
-const MONZA: Track = Track { name: "Autodromo Nazionale Monza (Grand Prix)", length_m: 5793.0, start: (45.6156, 9.2811) };
+const SILVERSTONE_GP: Track =
+    Track { name: "Silverstone Circuit (Grand Prix)", length_m: 5786.4, start: (52.0683531, -1.0235284) };
+const SILVERSTONE_NATIONAL: Track =
+    Track { name: "Silverstone Circuit (National)", length_m: 2638.0, start: SILVERSTONE_GP.start };
+const SPA: Track =
+    Track { name: "Circuit de Spa-Francorchamps (Grand Prix Pits)", length_m: 6990.0, start: (50.4372, 5.9714) };
+const MONZA: Track =
+    Track { name: "Autodromo Nazionale Monza (Grand Prix)", length_m: 5793.0, start: (45.6156, 9.2811) };
 
 fn entry(id: &str, driver: &str, car: &str, track: &Track, lap_time: f64, last_used: u64) -> LibraryEntry {
     LibraryEntry {
@@ -271,6 +275,7 @@ impl eframe::App for Preview {
             reference: (v.laps != Laps::None).then_some((&self.lap, status)),
             active_id,
             error: v.error,
+            hotkey_error: None,
             connection: v.connection,
             browsing: false,
             file_hover: v.file_hover,
@@ -298,7 +303,9 @@ impl eframe::App for Preview {
 
     /// Replaces the real mouse with the variant's simulated pointer.
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        raw_input.events.retain(|e| !matches!(e, Event::PointerMoved(_) | Event::PointerButton { .. } | Event::PointerGone));
+        raw_input
+            .events
+            .retain(|e| !matches!(e, Event::PointerMoved(_) | Event::PointerButton { .. } | Event::PointerGone));
         let Some(variant) = self.variants.get(self.index) else { return };
         if (1..=variant.tabs).contains(&self.settled) {
             raw_input.events.push(Event::Key {

@@ -101,7 +101,7 @@ impl Default for Settings {
             show_ref: true,
             auto_reference: true,
             demo_when_idle: true,
-            unlock_hotkey: "Ctrl+Shift+O".into(),
+            unlock_hotkey: "Ctrl+Alt+Shift+O".into(),
             tab: SettingsTab::Display,
             window: None,
         }
@@ -139,10 +139,10 @@ impl Settings {
         if self.update_hz != 30 {
             self.update_hz = 60;
         }
-        if let Some(w) = self.window {
-            if ![w.x, w.y, w.w, w.h].iter().all(|v| v.is_finite()) || w.w < 1.0 || w.h < 1.0 {
-                self.window = None;
-            }
+        if let Some(w) = self.window
+            && (![w.x, w.y, w.w, w.h].iter().all(|v| v.is_finite()) || w.w < 1.0 || w.h < 1.0)
+        {
+            self.window = None;
         }
         self
     }
@@ -174,7 +174,12 @@ mod tests {
     fn round_trips_and_fills_missing_fields() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sub").join("settings.json");
-        let s = Settings { bg_opacity: 35.0, axis: Axis::Time, window: Some(WindowRect { x: 10.0, y: 20.0, w: 680.0, h: 170.0 }), ..Default::default() };
+        let s = Settings {
+            bg_opacity: 35.0,
+            axis: Axis::Time,
+            window: Some(WindowRect { x: 10.0, y: 20.0, w: 680.0, h: 170.0 }),
+            ..Default::default()
+        };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);
 
