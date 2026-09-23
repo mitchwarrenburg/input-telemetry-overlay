@@ -77,9 +77,12 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 0 5px 0 11px;
+  padding: 0 3px 0 11px;
   z-index: 2;
 }
+/* Gear and close, at the header's right end. */
+.ito-tools { display: flex; gap: 1px; margin-left: auto; }
+.ito-tools .ito-gear { margin-left: 0; }
 .ito-overlay:not(.is-locked) .ito-header { cursor: grab; }
 .ito-overlay.is-moving .ito-header { cursor: grabbing; }
 
@@ -168,12 +171,13 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 .ito-anchor[data-dir="nw"]::after, .ito-anchor[data-dir="ne"]::after,
 .ito-anchor[data-dir="sw"]::after, .ito-anchor[data-dir="se"]::after { left: 4.5px; top: 4.5px; width: 9px; height: 9px; }
 .ito-anchor[data-dir="nw"] { left: -9px; top: -9px; cursor: nwse-resize; }
-.ito-anchor[data-dir="ne"] { right: -9px; top: -9px; cursor: nesw-resize; }
+.ito-anchor[data-dir="ne"] { right: -9px; top: -9px; width: 12px; height: 12px; cursor: nesw-resize; }
+.ito-anchor[data-dir="ne"]::after { left: 1.5px; top: 1.5px; }
 .ito-anchor[data-dir="sw"] { left: -9px; bottom: -9px; cursor: nesw-resize; }
 .ito-anchor[data-dir="se"] { right: -9px; bottom: -9px; cursor: nwse-resize; }
 
 .ito-anchor[data-dir="n"], .ito-anchor[data-dir="s"] { left: 9px; right: 9px; height: 10px; cursor: ns-resize; }
-.ito-anchor[data-dir="n"] { top: -5px; }
+.ito-anchor[data-dir="n"] { top: -5px; height: 7px; }
 .ito-anchor[data-dir="s"] { bottom: -5px; }
 .ito-anchor[data-dir="n"]::after, .ito-anchor[data-dir="s"]::after { left: 50%; top: 2px; width: 22px; height: 6px; margin-left: -11px; border-radius: 3px; }
 
@@ -229,6 +233,10 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
    chips and pips can tint them. */
 .ito-cue {
   --brake-ink: #e0301f; /* solid red behind white text (4.5:1) */
+  /* The three counts, first to last. */
+  --count-1: #2fd46f;
+  --count-2: #ffd02e;
+  --count-3: var(--brake);
   width: 360px;
   height: 96px;
 }
@@ -252,6 +260,7 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 .cue-pip.is-current { opacity: 1; box-shadow: 0 0 0 1.5px rgba(var(--hud-surface), 1), 0 0 0 2.5px var(--hud-text); }
 .cue-tools { display: flex; gap: 1px; }
 .cue-tools .ito-gear { margin-left: 0; }
+.cue-head .ito-title { flex: none; }
 
 .cue-body {
   --fill: 0;
@@ -274,16 +283,18 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
   min-width: 0;
   overflow: hidden;
   border-radius: 5px 1px 1px 5px;
-  background:
-    linear-gradient(90deg, transparent 66.667%, rgba(255, 61, 46, 0.1) 66.667%),
-    rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.07);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
 .cue-fill, .cue-join { position: absolute; top: 0; bottom: 0; }
+/* Spans the whole track and is clipped to the filled part, so each segment keeps its own
+   colour: green for the first count, yellow for the second, red for the last. */
 .cue-fill {
-  left: calc(var(--join) * 100%);
-  width: calc((var(--fill) - var(--join)) * 100%);
-  background: rgba(232, 239, 238, 0.92);
+  left: 0;
+  right: 0;
+  background: linear-gradient(90deg,
+    var(--count-1) 0 33.333%, var(--count-2) 33.333% 66.667%, var(--count-3) 66.667% 100%);
+  clip-path: inset(0 calc((1 - var(--fill)) * 100%) 0 calc(var(--join) * 100%));
 }
 /* The part a short straight skipped. */
 .cue-join {
@@ -320,7 +331,15 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 }
 .cue-cap span { display: block; }
 
-.cue-body[data-mode="countdown"] .cue-cap { color: var(--hud-text); box-shadow: inset 0 0 0 1.5px rgba(232, 239, 238, 0.55); }
+/* The cap takes the colour of the segment that's filling. */
+.cue-body[data-mode="countdown"] { --count: var(--count-1); }
+.cue-body[data-beat="2"] { --count: var(--count-2); }
+.cue-body[data-beat="1"] { --count: var(--count-3); }
+.cue-body[data-mode="countdown"] .cue-cap {
+  color: #fff;
+  box-shadow: inset 0 0 0 1.5px var(--count);
+  background: color-mix(in srgb, var(--count) 18%, transparent);
+}
 .cue-body[data-mode="countdown"] .cue-cap span { font-size: clamp(22px, 34cqh, 44px); letter-spacing: 0; font-variant-numeric: tabular-nums; }
 /* Each count pops in; alternating names restart the animation on every change. */
 .cue-body[data-beat="3"] .cue-cap span, .cue-body[data-beat="1"] .cue-cap span { animation: cue-pop-a 0.22s ease-out; }
@@ -328,19 +347,14 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 @keyframes cue-pop-a { from { transform: scale(1.35); opacity: 0.4; } }
 @keyframes cue-pop-b { from { transform: scale(1.35); opacity: 0.4; } }
 
-/* Last count goes red; BRAKE is solid red and flashes. */
-.cue-body[data-beat="1"] .cue-fill { background: var(--brake); }
-.cue-body[data-beat="1"] .cue-cap { color: #fff; box-shadow: inset 0 0 0 1.5px var(--brake); background: rgba(255, 61, 46, 0.18); }
-.cue-body[data-mode="brake"] .cue-fill,
-.cue-body[data-mode="braking"] .cue-fill { background: var(--brake); }
+/* BRAKE is solid red and flashes. */
 .cue-body[data-mode="brake"] .cue-cap,
 .cue-body[data-mode="braking"] .cue-cap { color: #fff; background: var(--brake-ink); box-shadow: none; }
 .cue-body[data-mode="brake"] .cue-cap { animation: cue-flash 0.2s ease-in-out 4 alternate; }
 @keyframes cue-flash { to { background: #ff6a5c; } }
-/* On the brake: the bar settles so the eye moves to the target gauge. */
-.cue-body[data-mode="braking"] .cue-fill { background: rgba(255, 61, 46, 0.5); }
-/* Braked early: the bar stops where you did, in the early colour. */
-.cue-body[data-mode="braking"][data-early] .cue-fill { background: rgb(111, 193, 255); }
+/* On the brake: the bar stops where you braked and dims, so the eye moves to the target
+   gauge. Braked early, the unfilled part up to the cap is how early. */
+.cue-body[data-mode="braking"] .cue-fill { opacity: 0.45; }
 .cue-body[data-mode="noref"] .cue-cap,
 .cue-body[data-mode="nozones"] .cue-cap { color: var(--hud-muted); }
 

@@ -309,13 +309,9 @@
       ctx.strokeStyle = `rgba(${INK.surface}, 0.55)`; // keeps the line legible over its own fill
       ctx.lineWidth = 4;
       ctx.stroke(p);
-      ctx.save();
-      ctx.shadowColor = `rgba(${rgb}, 0.55)`;
-      ctx.shadowBlur = 6;
       ctx.strokeStyle = `rgb(${rgb})`;
       ctx.lineWidth = 2;
       ctx.stroke(p);
-      ctx.restore();
     }
 
     dot(x, y, rgb, hollow) {

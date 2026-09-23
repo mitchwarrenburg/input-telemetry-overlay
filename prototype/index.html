@@ -24,9 +24,14 @@
         <span class="lg"><span class="lg-keys"><i class="lg-line" style="--c: var(--throttle)"></i><i class="lg-line" style="--c: var(--brake)"></i></span>Live</span>
         <span class="lg" id="legendRef"><span class="lg-keys"><i class="lg-fill" style="--c: var(--throttle)"></i><i class="lg-fill" style="--c: var(--brake)"></i></span>Ref <b id="legendRefTime">–</b></span>
       </div>
-      <button class="ito-gear" id="gear" type="button" aria-label="Overlay settings" aria-haspopup="dialog" aria-expanded="false" aria-controls="settings">
-        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M9.97 4.68 L10.27 1.95 L13.73 1.95 L14.03 4.68 L15.75 5.39 L17.89 3.67 L20.33 6.11 L18.61 8.25 L19.32 9.97 L22.05 10.27 L22.05 13.73 L19.32 14.03 L18.61 15.75 L20.33 17.89 L17.89 20.33 L15.75 18.61 L14.03 19.32 L13.73 22.05 L10.27 22.05 L9.97 19.32 L8.25 18.61 L6.11 20.33 L3.67 17.89 L5.39 15.75 L4.68 14.03 L1.95 13.73 L1.95 10.27 L4.68 9.97 L5.39 8.25 L3.67 6.11 L6.11 3.67 L8.25 5.39Z"/><circle cx="12" cy="12" r="3.2"/></svg>
-      </button>
+      <span class="ito-tools">
+        <button class="ito-gear" id="gear" type="button" aria-label="Overlay settings" aria-haspopup="dialog" aria-expanded="false" aria-controls="settings">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M9.97 4.68 L10.27 1.95 L13.73 1.95 L14.03 4.68 L15.75 5.39 L17.89 3.67 L20.33 6.11 L18.61 8.25 L19.32 9.97 L22.05 10.27 L22.05 13.73 L19.32 14.03 L18.61 15.75 L20.33 17.89 L17.89 20.33 L15.75 18.61 L14.03 19.32 L13.73 22.05 L10.27 22.05 L9.97 19.32 L8.25 18.61 L6.11 20.33 L3.67 17.89 L5.39 15.75 L4.68 14.03 L1.95 13.73 L1.95 10.27 L4.68 9.97 L5.39 8.25 L3.67 6.11 L6.11 3.67 L8.25 5.39Z"/><circle cx="12" cy="12" r="3.2"/></svg>
+        </button>
+        <button class="ito-gear" id="quit" type="button" aria-label="Quit the overlay">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </span>
     </header>
 
     <div class="ito-size" id="sizeReadout" aria-hidden="true"></div>
@@ -106,6 +111,10 @@
       <label class="set-row">
         <span class="row-head"><span>Good within <small>of the reference</small></span><output data-for="cueTol"></output></span>
         <input type="range" min="0.02" max="0.2" step="0.01" data-setting="cueTol" data-unit=" s" data-decimals="2" data-prefix="±">
+      </label>
+      <label class="set-row">
+        <span class="row-head"><span>Perfect within <small>inside good</small></span><output data-for="cuePerfect"></output></span>
+        <input type="range" min="0.01" max="0.06" step="0.01" data-setting="cuePerfect" data-unit=" s" data-decimals="2" data-prefix="±">
       </label>
       <div class="grade-key" id="gradeKey"></div>
       <label class="set-toggle">

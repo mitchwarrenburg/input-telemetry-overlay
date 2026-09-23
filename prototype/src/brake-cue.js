@@ -7,13 +7,14 @@
 (function (root) {
   const ITO = (root.ITO = root.ITO || {});
 
-  // Early to late. "Good" is within ±tol of the reference brake point; "very" is past 3 × tol.
-  // Chevrons point the way the graph does (early = behind the car = left), so the grade
-  // reads without colour.
+  // Early to late. "Perfect" is within ±perfect of the reference brake point, "Good" within
+  // ±tol, and "very" is past 3 × tol. Chevrons point the way the graph does (early = behind
+  // the car = left), so the grade reads without colour.
   const GRADES = {
     veryEarly: { label: "Very early", chip: "«« Early", rgb: "91, 140, 255" },
     early: { label: "Early", chip: "« Early", rgb: "111, 193, 255" },
     good: { label: "Good", chip: "Good", rgb: "46, 230, 160" },
+    perfect: { label: "Perfect", chip: "Perfect", rgb: "178, 124, 255" },
     late: { label: "Late", chip: "Late »", rgb: "255, 177, 59" },
     veryLate: { label: "Very late", chip: "Late »»", rgb: "255, 107, 61" },
     none: { label: "No brake", chip: "No brake", rgb: "127, 139, 137" },
@@ -22,9 +23,10 @@
   const MATCH_BEFORE = 4; // s: a brake-on this long before a brake point still counts as that zone's
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-  function gradeOf(dt, tol) {
+  function gradeOf(dt, tol, perfect = 0) {
     if (dt == null) return "none";
     const a = Math.abs(dt);
+    if (a <= perfect) return "perfect";
     if (a <= tol) return "good";
     if (a <= VERY * tol) return dt < 0 ? "early" : "late";
     return dt < 0 ? "veryEarly" : "veryLate";
@@ -86,8 +88,8 @@
       while (this.order.length > 120) this.results.delete(this.order.shift());
     }
 
-    // cfg: { lead, early, min, tol }: countdown seconds, cue-early seconds, minimum
-    // reference peak (0–1) and the ± "good" window in seconds.
+    // cfg: { lead, early, min, tol, perfect }: countdown seconds, cue-early seconds, minimum
+    // reference peak (0–1), and the ± "good" and "perfect" windows in seconds.
     update(now, live, cfg) {
       const { ref } = this;
       if (!ref) return { mode: "noref" };
@@ -180,7 +182,7 @@
       if (v) {
         st.verdict = {
           zoneNo: cueIdx.indexOf(v.k) + 1,
-          grade: gradeOf(v.dt, cfg.tol),
+          grade: gradeOf(v.dt, cfg.tol, cfg.perfect),
           dt: v.dt,
           dm: v.dm,
           pending: !!v.pending,
@@ -194,13 +196,13 @@
       st.pips = cueIdx.map((k) => {
         const now0 = this.results.get(`${cur.m}:${k}`);
         const was = now0 || this.results.get(`${cur.m - 1}:${k}`);
-        return { grade: was ? gradeOf(was.dt, cfg.tol) : null, stale: !now0, current: k === cur.k };
+        return { grade: was ? gradeOf(was.dt, cfg.tol, cfg.perfect) : null, stale: !now0, current: k === cur.k };
       });
 
       // Brake-ons to underline on the graph.
       for (let i = Math.max(0, this.order.length - 24); i < this.order.length; i++) {
         const x = this.results.get(this.order[i]);
-        if (x && x.event) st.marks.push({ m: x.m, k: x.k, grade: gradeOf(x.dt, cfg.tol), onD: x.event.onD, onT: x.event.onT });
+        if (x && x.event) st.marks.push({ m: x.m, k: x.k, grade: gradeOf(x.dt, cfg.tol, cfg.perfect), onD: x.event.onD, onT: x.event.onT });
       }
       return st;
     }

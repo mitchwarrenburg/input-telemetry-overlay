@@ -23,6 +23,7 @@
     cueMin: 15, // %: zones with a lower reference peak get no countdown
     cueBeep: false,
     cueTol: 0.08, // s: ± "good" window; "very" early/late past 3×
+    cuePerfect: 0.03, // s: ± "perfect" window, inside the good one
     cueGraph: true,
     cueFrame: null,
     tab: "display",
@@ -71,7 +72,7 @@
   const frame = ITO.attachFrame(overlay, {
     handle: header,
     readout: document.getElementById("sizeReadout"),
-    minW: 260,
+    minW: 272, // the short title, the longest badge, the gear and the close button
     minH: 90,
     onChange: () => panel && panel.position(),
     onCommit: (r) => settings.set("frame", r),
@@ -101,6 +102,12 @@
   });
   cueFrame.set(settings.v.cueFrame || defaultCueFrame());
   cueView.close.addEventListener("click", () => settings.set("cueOn", false));
+  // Prototype: the app quits here. Hide both windows until reload.
+  document.getElementById("quit").addEventListener("click", () => {
+    panel && panel.close();
+    overlay.hidden = cueEl.hidden = true;
+    document.querySelector(".harness-hint").textContent = "The app would quit here. Reload to bring the overlay back.";
+  });
 
   window.addEventListener("resize", () => { frame.set(frame.get()); cueFrame.set(cueFrame.get()); });
 
@@ -108,7 +115,7 @@
   function measureHeader() {
     const o = overlay.getBoundingClientRect();
     const bx = o.left + overlay.clientLeft, by = o.top + overlay.clientTop;
-    obstacles = [...header.querySelectorAll(".ito-title, .ito-legend, .ito-gear")]
+    obstacles = [...header.querySelectorAll(".ito-title, .ito-legend, .ito-tools")]
       .map((el) => el.getBoundingClientRect())
       .filter((r) => r.width > 0)
       .map((r) => ({ x: r.left - bx - 2, y: r.top - by - 2, w: r.width + 4, h: r.height + 4 }));
@@ -143,17 +150,18 @@
   settings.on((k) => {
     applyAppearance();
     if (k === "cueBeep" && settings.v.cueBeep) beeper.enable(); // a click, so audio may start
-    if (k === "cueTol" || k === "*") renderGradeKey();
+    if (k === "cueTol" || k === "cuePerfect" || k === "*") renderGradeKey();
     if (k !== "frame" && k !== "cueFrame") dirty = true;
   });
 
   // Grade key in Settings → Brakes, with the thresholds for the current window.
   function renderGradeKey() {
-    const t = settings.v.cueTol, f = (x) => x.toFixed(2);
+    const t = settings.v.cueTol, p = Math.min(settings.v.cuePerfect, t), f = (x) => x.toFixed(2);
     const rows = [
       ["veryEarly", `over ${f(3 * t)} s early`],
       ["early", `${f(t)}–${f(3 * t)} s early`],
       ["good", `within ±${f(t)} s`],
+      ["perfect", `within ±${f(p)} s`],
       ["late", `${f(t)}–${f(3 * t)} s late`],
       ["veryLate", `over ${f(3 * t)} s late`],
       ["none", "no brake where the reference brakes"],
@@ -211,7 +219,7 @@
 
   const cueCfg = () => {
     const v = settings.v;
-    return { lead: v.cueLead, early: v.cueEarly, min: v.cueMin / 100, tol: v.cueTol };
+    return { lead: v.cueLead, early: v.cueEarly, min: v.cueMin / 100, tol: v.cueTol, perfect: Math.min(v.cuePerfect, v.cueTol) };
   };
   function updateCue() {
     const prev = cueState;
