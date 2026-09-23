@@ -18,7 +18,7 @@
     ({ grade, dt, dm, peak, target, zoneNo, pending: false, current: false, ...extra });
   const Z3 = verdict("good", -0.05, -3, 0.61, 0.62, 3);
   const base = {
-    mode: "countdown", beat: 2, fill: 0.5, join: 0, early: false,
+    mode: "countdown", beat: 2, fill: 0.5, join: 0,
     zoneNo: 4, zoneCount: 9, dist: 124, target: 0.72, live: 0, peak: null,
     verdict: Z3, pips: pips(["good", "late", "good"]),
   };
@@ -124,7 +124,7 @@
   const cases = $("#cases");
   [
     { tag: "Early", title: "Braked before the count ended",
-      state: S({ mode: "braking", beat: 0, fill: 0.88, early: true, live: 0.52, peak: 0.52, verdict: verdict("veryEarly", -0.27, -19, 0.52, 0.72, 4, { current: true }), pips: pips(["good", "late", "good", "veryEarly"]) }),
+      state: S({ mode: "braking", beat: 0, fill: 0.88, live: 0.52, peak: 0.52, verdict: verdict("veryEarly", -0.27, -19, 0.52, 0.72, 4, { current: true }), pips: pips(["good", "late", "good", "veryEarly"]) }),
       note: "The bar stops where you braked and dims; the gap to the cap is how early." },
     { tag: "Late", title: "Past the brake point, not braking yet",
       state: S({ mode: "brake", beat: 0, fill: 1, dist: -8, verdict: verdict("late", 0.13, 9, null, 0.72, 4, { pending: true, current: true }) }),

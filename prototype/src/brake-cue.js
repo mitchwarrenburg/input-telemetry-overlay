@@ -145,7 +145,6 @@
         beat: 0,
         fill: 0,
         join: clamp((joinAt - armAt) / cfg.lead, 0, 1),
-        early: false,
         zoneNo: cueIdx.indexOf(cur.k) + 1,
         zoneCount: cueIdx.length,
         dist,
@@ -161,7 +160,6 @@
         // Braking: the bar stops where the brake went on.
         st.mode = "braking";
         st.fill = Math.max(st.join, clamp((cur.s + r.dt - armAt) / cfg.lead, 0, 1));
-        st.early = r.dt < -cfg.tol;
         st.peak = r.event.peak;
       } else if (A < joinAt) {
         st.mode = "idle";
@@ -301,7 +299,6 @@
       const mode = s.mode;
       b.dataset.mode = mode;
       b.dataset.beat = s.beat || "";
-      b.toggleAttribute("data-early", !!s.early);
       b.toggleAttribute("data-joined", s.mode === "countdown" && s.join > 0.001);
       const css = { fill: s.fill || 0, join: s.join || 0, live: s.live || 0, target: s.target || 0, peak: s.peak == null ? -1 : s.peak };
       for (const k in css) b.style.setProperty(`--${k}`, css[k].toFixed(4));
