@@ -1,0 +1,30 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
+      - run: cargo build --release
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target/release/input-telemetry-overlay.exe dist/
+          Copy-Item README.md, LICENSE dist/
+          Copy-Item assets/fonts/OFL.txt dist/FONT-LICENSE-OFL.txt
+          Compress-Archive -Path dist/* -DestinationPath "input-telemetry-overlay-${{ github.ref_name }}-windows-x64.zip"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: input-telemetry-overlay-*-windows-x64.zip
+          generate_release_notes: true
