@@ -149,3 +149,8 @@ Not affiliated with iRacing or Garage 61.
 ## License
 
 [MIT](LICENSE)
+
+## CodeGraph
+
+See [CodeGraph setup and review context](docs/codegraph.md) for the project-local
+Claude/Codex server, per-checkout indexing and CLI commands.

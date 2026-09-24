@@ -1,5 +1,9 @@
 /target
 *.tmp
-.claude/
+.claude/*
+!.claude/settings.json
 .idea/
 .vscode/
+
+# Per-checkout CodeGraph index and runtime files.
+/.codegraph/
