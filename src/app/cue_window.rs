@@ -222,6 +222,7 @@ impl CueWindow {
             self.native = NativeWindow::find(TITLE);
             if let Some(native) = self.native {
                 native.fix_transparency();
+                native.remove_frame();
             }
         }
         let Some(native) = self.native else { return };

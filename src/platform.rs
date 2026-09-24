@@ -509,6 +509,36 @@ impl NativeWindow {
         blur_behind(self.0);
     }
 
+    /// Takes away the frame winit gives an undecorated window for a drop shadow, which
+    /// egui asks for and has no way to turn off for a secondary window: a 1 pt strip of
+    /// non-client area, around which Windows 11 draws a border and a shadow. The window's
+    /// procedure is wrapped to answer `WM_NCCALCSIZE` with the whole window as client
+    /// area, which is what winit does without the shadow. Once per window; later calls do
+    /// nothing.
+    pub fn remove_frame(self) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GWLP_WNDPROC, GetPropW, GetWindowLongPtrW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+            SWP_NOZORDER, SetPropW, SetWindowLongPtrW, SetWindowPos,
+        };
+        // SAFETY: `frameless_proc` lives as long as the program, and passes everything but
+        // the one message on to the procedure it replaced, which it keeps in a property of
+        // the window (set before it takes over) until the window is destroyed.
+        unsafe {
+            if !GetPropW(self.0, ORIGINAL_PROC).is_null() {
+                return;
+            }
+            let original = GetWindowLongPtrW(self.0, GWLP_WNDPROC);
+            if original == 0 || SetPropW(self.0, ORIGINAL_PROC, original as HANDLE) == 0 {
+                log::warn!("Couldn't take the frame off a window: {}", io::Error::last_os_error());
+                return;
+            }
+            SetWindowLongPtrW(self.0, GWLP_WNDPROC, frameless_proc as *const () as isize);
+            // Have the frame worked out again, with the new procedure answering.
+            let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED;
+            SetWindowPos(self.0, std::ptr::null_mut(), 0, 0, 0, 0, flags);
+        }
+    }
+
     /// Where the window is, physical pixels.
     pub fn outer_px(self) -> Option<egui::Rect> {
         use windows_sys::Win32::Foundation::RECT;
@@ -571,6 +601,40 @@ impl NativeWindow {
             let points = ((p.y as u32 & 0xffff) << 16) | (p.x as u32 & 0xffff);
             PostMessageW(self.0, WM_NCLBUTTONDOWN, hit as usize, points as isize);
         }
+    }
+}
+
+/// The window property holding the procedure [`NativeWindow::remove_frame`] replaced.
+const ORIGINAL_PROC: windows_sys::core::PCWSTR = windows_sys::core::w!("ito-original-wndproc");
+
+/// The procedure of a window whose frame [`NativeWindow::remove_frame`] took away.
+unsafe extern "system" fn frameless_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: windows_sys::Win32::Foundation::WPARAM,
+    lparam: windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::Win32::Foundation::LRESULT {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CallWindowProcW, DefWindowProcW, GWLP_WNDPROC, GetPropW, RemovePropW, SetWindowLongPtrW, WM_NCCALCSIZE,
+        WM_NCDESTROY, WNDPROC,
+    };
+    // SAFETY: the property holds the procedure this one replaced, a valid WNDPROC (it was
+    // set before this one took over); it's put back as the window goes.
+    unsafe {
+        // The whole window is client area: no frame to draw a border and shadow around.
+        if msg == WM_NCCALCSIZE && wparam != 0 {
+            return 0;
+        }
+        let original = GetPropW(hwnd, ORIGINAL_PROC) as isize;
+        if original == 0 {
+            return DefWindowProcW(hwnd, msg, wparam, lparam);
+        }
+        if msg == WM_NCDESTROY {
+            RemovePropW(hwnd, ORIGINAL_PROC);
+            SetWindowLongPtrW(hwnd, GWLP_WNDPROC, original);
+        }
+        let original = std::mem::transmute::<isize, WNDPROC>(original);
+        CallWindowProcW(original, hwnd, msg, wparam, lparam)
     }
 }
 

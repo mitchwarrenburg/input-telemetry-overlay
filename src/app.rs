@@ -599,6 +599,10 @@ impl OverlayApp {
             };
             settings_ui(ui, &mut self.settings, cx)
         });
+        // Its rounded panel is the whole window: no square frame around it.
+        if let Some(native) = platform::NativeWindow::find(self.settings_owner.title()) {
+            native.remove_frame();
+        }
 
         self.settings_height = out.panel.desired_height.max(1.0);
         for action in out.panel.actions {
