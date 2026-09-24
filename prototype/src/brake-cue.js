@@ -234,6 +234,8 @@
 
   const GEAR = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M9.97 4.68 L10.27 1.95 L13.73 1.95 L14.03 4.68 L15.75 5.39 L17.89 3.67 L20.33 6.11 L18.61 8.25 L19.32 9.97 L22.05 10.27 L22.05 13.73 L19.32 14.03 L18.61 15.75 L20.33 17.89 L17.89 20.33 L15.75 18.61 L14.03 19.32 L13.73 22.05 L10.27 22.05 L9.97 19.32 L8.25 18.61 L6.11 20.33 L3.67 17.89 L5.39 15.75 L4.68 14.03 L1.95 13.73 L1.95 10.27 L4.68 9.97 L5.39 8.25 L3.67 6.11 L6.11 3.67 L8.25 5.39Z"/><circle cx="12" cy="12" r="3.2"/></svg>';
   const CLOSE = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>';
+  const COLLAPSE = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>';
+  const EXPAND = '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>';
   const TEMPLATE = `
     <header class="ito-header cue-head">
       <span class="ito-grip" aria-hidden="true"></span>
@@ -241,6 +243,7 @@
       <span class="cue-next"></span>
       <span class="cue-pips" aria-hidden="true"></span>
       <span class="cue-tools">
+        <button class="ito-gear cue-collapse" type="button" aria-label="Collapse to the bar" title="Collapse to the bar">${COLLAPSE}</button>
         <button class="ito-gear cue-gear" type="button" aria-label="Brake point settings" aria-haspopup="dialog" aria-expanded="false">${GEAR}</button>
         <button class="ito-gear cue-close" type="button" aria-label="Hide the brake point countdown">${CLOSE}</button>
       </span>
@@ -251,6 +254,11 @@
           <i class="cue-join"></i><i class="cue-fill"></i>
           <i class="cue-tick" style="left: 33.333%"></i><i class="cue-tick" style="left: 66.667%"></i>
           <span class="cue-msg"></span>
+          <span class="cue-info" aria-hidden="true">
+            <span class="ci ci-target"><small>Tgt</small><b></b></span>
+            <span class="ci ci-mid"><small></small><b></b></span>
+            <span class="ci ci-final"><small>Final</small><b></b><em></em></span>
+          </span>
         </div>
         <div class="cue-cap"><span></span></div>
         <div class="cue-target" title="Reference peak brake pressure for this zone">
@@ -266,6 +274,7 @@
         <span class="cue-vpeak"></span>
       </div>
     </div>
+    <button class="cue-expand" type="button" aria-label="Expand the brake point window" title="Expand">${EXPAND}</button>
     <div class="ito-size" aria-hidden="true"></div>`;
 
   const pct = (v) => `${Math.round(v * 100)}%`;
@@ -285,6 +294,11 @@
         handle: $(".cue-head"),
         gear: $(".cue-gear"),
         close: $(".cue-close"),
+        collapse: $(".cue-collapse"),
+        expand: $(".cue-expand"),
+        ciTarget: $(".ci-target b"),
+        ciMid: $(".ci-mid"),
+        ciFinal: $(".ci-final"),
         readout: $(".ito-size"),
         body: $(".cue-body"),
         next: $(".cue-next"),
@@ -324,6 +338,7 @@
         mode === "noref" ? "NO REFERENCE LAP" :
         mode === "nozones" ? "NO BRAKE ZONES" : "";
       this.target.textContent = s.target != null ? pct(s.target) : "–";
+      this.renderCompact(s);
       this.next.textContent = s.zoneNo ? `Z${s.zoneNo}${mode === "countdown" ? ` · ${distText(s.dist)}` : ""}` : "";
 
       // Timing: the zone being decided, or the last one.
@@ -365,6 +380,30 @@
         el.classList.toggle("is-stale", p.stale);
         el.classList.toggle("is-current", p.current);
       });
+    }
+
+    // Compact mode's readout inside the bar: the target for the zone ahead (gold), your
+    // pressure now while you're on the brake (light blue), and, between zones, your final
+    // pressure in the last one (the peak you reached) against its target.
+    renderCompact(s) {
+      this.ciTarget.textContent = s.target != null ? pct(s.target) : "–";
+      this.ciTarget.parentElement.hidden = s.target == null;
+      const onBrake = (s.live || 0) > 0.02;
+      const mid = this.ciMid;
+      mid.classList.toggle("is-now", onBrake);
+      mid.firstChild.textContent = onBrake ? "Now" : s.mode === "idle" ? "Next" : "";
+      mid.lastChild.textContent = onBrake ? pct(s.live) :
+        s.mode === "idle" ? distText(s.dist) :
+        s.mode === "noref" ? "No reference lap" : s.mode === "nozones" ? "No brake zones" : "";
+      const v = s.verdict;
+      // Between zones only: counting down and braking, it would be the wrong zone's.
+      const fin = v && v.peak != null && s.mode === "idle" ? v : null;
+      this.ciFinal.hidden = !fin;
+      if (fin) {
+        const diff = Math.round(fin.peak * 100) - Math.round(fin.target * 100);
+        this.ciFinal.children[1].textContent = pct(fin.peak);
+        this.ciFinal.children[2].textContent = diff ? signed(diff, 0, "") : "±0";
+      }
     }
   }
 

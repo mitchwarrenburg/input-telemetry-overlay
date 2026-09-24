@@ -131,7 +131,7 @@
     for (const inp of $$("input[type=checkbox][data-setting]")) {
       inp.addEventListener("change", () => settings.set(inp.dataset.setting, inp.checked));
     }
-    $("#resetAll").addEventListener("click", () => settings.reset(["frame", "tab"]));
+    $("#resetAll").addEventListener("click", () => settings.reset(["frame", "cueFrame", "cueCompactFrame", "tab"]));
     $("#resetLayout").addEventListener("click", () => onResetLayout && onResetLayout());
 
     function format(k, v, inp) {

@@ -25,7 +25,11 @@
     cueTol: 0.08, // s: ± "good" window; "very" early/late past 3×
     cuePerfect: 0.03, // s: ± "perfect" window, inside the good one
     cueGraph: true,
-    cueFrame: null,
+    cueCompact: false, // just the bar
+    cueBg: 80, // % background opacity of the brake point window
+    cueFg: 100, // % opacity of what's drawn on it
+    cueFrame: null, // full window
+    cueCompactFrame: null, // compact bar
     tab: "display",
     frame: null,
   };
@@ -87,21 +91,42 @@
   let cueState = null;
 
   // Default: centred just above the graph.
+  const CUE_H = 96, CUE_COMPACT_H = 40;
   function defaultCueFrame() {
-    const o = frame.get(), w = 360, h = 96;
+    const o = frame.get(), w = 360, h = settings.v.cueCompact ? CUE_COMPACT_H : CUE_H;
     const y = o.y - h - 12 >= 8 ? o.y - h - 12 : o.y + o.h + 12;
     return { x: Math.round(o.x + (o.w - w) / 2), y, w, h };
   }
+  const cueFrameKey = () => (settings.v.cueCompact ? "cueCompactFrame" : "cueFrame");
+  const cueMin = () => (settings.v.cueCompact ? [180, 30] : [230, 84]);
+  // In compact mode there's no header: the whole bar moves the window.
   const cueFrame = ITO.attachFrame(cueEl, {
-    handle: cueView.handle,
+    handle: cueEl,
     readout: cueView.readout,
-    minW: 230,
-    minH: 84,
+    minW: cueMin()[0],
+    minH: cueMin()[1],
+    canMove: (e) => settings.v.cueCompact || !!e.target.closest(".cue-head"),
     onChange: () => panel && panel.position(),
-    onCommit: (r) => settings.set("cueFrame", r),
+    onCommit: (r) => settings.set(cueFrameKey(), r),
   });
-  cueFrame.set(settings.v.cueFrame || defaultCueFrame());
+  cueEl.classList.toggle("is-compact", settings.v.cueCompact);
+  cueFrame.set(settings.v[cueFrameKey()] || defaultCueFrame());
   cueView.close.addEventListener("click", () => settings.set("cueOn", false));
+  cueView.collapse.addEventListener("click", () => settings.set("cueCompact", true));
+  cueView.expand.addEventListener("click", () => settings.set("cueCompact", false));
+
+  // Switching layouts keeps the window's top-left corner and width; each layout keeps its
+  // own height.
+  function applyCueLayout() {
+    const on = settings.v.cueCompact;
+    if (cueEl.classList.contains("is-compact") === on) return;
+    const cur = cueFrame.get();
+    settings.set(on ? "cueFrame" : "cueCompactFrame", cur); // the layout being left
+    cueEl.classList.toggle("is-compact", on);
+    cueFrame.setMin(...cueMin());
+    const kept = settings.v[cueFrameKey()];
+    settings.set(cueFrameKey(), cueFrame.set({ x: cur.x, y: cur.y, w: cur.w, h: kept ? kept.h : on ? CUE_COMPACT_H : CUE_H }));
+  }
   // Prototype: the app quits here. Hide both windows until reload.
   document.getElementById("quit").addEventListener("click", () => {
     panel && panel.close();
@@ -138,20 +163,21 @@
 
   function applyAppearance() {
     const v = settings.v;
-    for (const el of [overlay, cueEl]) {
-      el.style.setProperty("--bg-alpha", v.bgOpacity / 100);
-      el.classList.toggle("is-locked", v.locked);
-    }
+    for (const el of [overlay, cueEl]) el.classList.toggle("is-locked", v.locked);
+    overlay.style.setProperty("--bg-alpha", v.bgOpacity / 100);
+    cueEl.style.setProperty("--bg-alpha", v.cueBg / 100);
+    cueEl.style.setProperty("--fg-alpha", v.cueFg / 100);
     cueEl.hidden = !v.cueOn;
     document.getElementById("legendRef").hidden = !reference || !v.showRef;
     document.getElementById("legendRefTime").textContent = reference ? reference.lapTimeText : "–";
     measureHeader();
   }
   settings.on((k) => {
+    if (k === "cueCompact" || k === "*") applyCueLayout();
     applyAppearance();
     if (k === "cueBeep" && settings.v.cueBeep) beeper.enable(); // a click, so audio may start
     if (k === "cueTol" || k === "cuePerfect" || k === "*") renderGradeKey();
-    if (k !== "frame" && k !== "cueFrame") dirty = true;
+    if (k !== "frame" && k !== "cueFrame" && k !== "cueCompactFrame") dirty = true;
   });
 
   // Grade key in Settings → Brakes, with the thresholds for the current window.
@@ -203,7 +229,7 @@
     },
     onResetLayout: () => {
       settings.set("frame", frame.set(defaultFrame()));
-      settings.set("cueFrame", cueFrame.set(defaultCueFrame()));
+      settings.set(cueFrameKey(), cueFrame.set(defaultCueFrame()));
     },
   });
   applyAppearance();

@@ -24,10 +24,16 @@
   };
   const S = (o) => ({ ...base, ...o });
 
-  function widget(state, w = 360, h = 96) {
+  // opts: { compact, bg, fg, hover }: compact layout, background and contents opacity
+  // (0–1), and the expand button shown as if hovered.
+  function widget(state, w = 360, h = 96, opts = {}) {
     const el = document.createElement("section");
     const view = new ITO.BrakeCueView(el);
     el.classList.add("is-locked");
+    el.classList.toggle("is-compact", !!opts.compact);
+    el.classList.toggle("is-hover-demo", !!opts.hover);
+    if (opts.bg != null) el.style.setProperty("--bg-alpha", opts.bg);
+    if (opts.fg != null) el.style.setProperty("--fg-alpha", opts.fg);
     el.style.width = `${w}px`;
     el.style.height = `${h}px`;
     el.setAttribute("aria-label", "Brake point countdown");
@@ -35,7 +41,7 @@
     return el;
   }
 
-  function card(host, { tag, title, note, state, w, h }) {
+  function card(host, { tag, title, note, state, w, h, opts }) {
     const c = document.createElement("div");
     c.className = "spec";
     const t = document.createElement("div");
@@ -44,7 +50,7 @@
     t.append(title);
     const bd = document.createElement("div");
     bd.className = "backdrop";
-    bd.append(widget(state, w, h));
+    bd.append(widget(state, w, h, opts));
     c.append(t, bd);
     if (note) {
       const p = document.createElement("p");
@@ -155,6 +161,40 @@
     note: "Below 330 px the zone strip goes; below 290 px the metres; below 250 px the peak." });
   card(sizes, { tag: "480 × 128", title: "Large", state: S({ beat: 1, fill: 0.8, dist: 46 }), w: 480, h: 128,
     note: "The count and cap text scale with the window's height." });
+
+  // ---------- compact ----------
+  const compact = $("#compact");
+  const C = (o) => ({ w: 360, h: 40, ...o, opts: { compact: true, ...(o.opts || {}) } });
+  [
+    { tag: "Approach", title: "Next zone", state: S({ mode: "idle", beat: 0, fill: 0, dist: 540 }),
+      note: "Gold: the next zone's target. Middle: distance to its brake point. Right: your final pressure in the last zone, against its target." },
+    { tag: "−2 s", title: "Counting", state: S({ beat: 2, fill: 0.45, dist: 118 }),
+      note: "The count fills the bar as in the full window; the target stays, the rest clears." },
+    { tag: "0 s", title: "BRAKE", state: S({ mode: "brake", beat: 0, fill: 1, dist: 0 }), note: "Solid red with the glow; just the target." },
+    { tag: "Braking", title: "Graded", state: S({ mode: "braking", beat: 0, fill: 1, live: 0.5, peak: 0.5, flash: { grade: "good", alpha: 1 }, verdict: verdict("good", 0.05, 3, 0.5, 0.72, 4, { current: true }) }),
+      note: "While you're on the brake, the middle shows your pressure now, in light blue." },
+    { tag: "Braking", title: "Still on the brake", state: S({ mode: "braking", beat: 0, fill: 1, live: 0.66, peak: 0.7, verdict: verdict("good", 0.05, 3, 0.7, 0.72, 4, { current: true }) }),
+      note: "The bar has emptied; your pressure keeps updating." },
+    { tag: "Released", title: "Final", state: S({ mode: "idle", beat: 0, fill: 0, zoneNo: 5, dist: 412, target: 0.48, verdict: verdict("good", 0.05, 3, 0.7, 0.72, 4) }),
+      note: "Off the brake: your final pressure for that zone (the peak you reached) with its difference from the target; the gold target moves on to the next zone." },
+    { tag: "Perfect", title: "Purple", state: S({ mode: "braking", beat: 0, fill: 1, live: 0.58, peak: 0.58, flash: { grade: "perfect", alpha: 1 }, verdict: verdict("perfect", 0.01, 1, 0.58, 0.72, 4, { current: true }) }),
+      note: "The whole bar and the cap light purple, as in the full window." },
+    { tag: "Hover", title: "Expand", state: S({ mode: "idle", beat: 0, fill: 0, dist: 540 }), opts: { hover: true },
+      note: "Hovering shows the expand button. The whole bar moves the window; the edges resize it." },
+    { tag: "230 × 34", title: "Narrow", state: S({ mode: "idle", beat: 0, fill: 0, dist: 540 }), w: 230, h: 34,
+      note: "Below 250 px the small labels go and only the numbers stay." },
+  ].forEach((c) => card(compact, C(c)));
+
+  // ---------- transparency ----------
+  const alpha = $("#alpha");
+  const busy = S({ beat: 1, fill: 0.8, dist: 42 });
+  [
+    { tag: "80% · 100%", title: "Default", state: busy, opts: { bg: 0.8, fg: 1 } },
+    { tag: "30% · 100%", title: "Light background", state: busy, opts: { bg: 0.3, fg: 1 } },
+    { tag: "0% · 70%", title: "No background, softer contents", state: busy, opts: { bg: 0, fg: 0.7 } },
+    { tag: "0% · 85%", title: "Compact, no background", state: S({ mode: "braking", beat: 0, fill: 1, live: 0.66, peak: 0.7, verdict: verdict("good", 0.05, 3, 0.7, 0.72, 4, { current: true }) }),
+      w: 360, h: 40, opts: { compact: true, bg: 0, fg: 0.85 } },
+  ].forEach((c) => card(alpha, c));
 
   // ---------- graph ----------
   const sample = ITO.parseLapCsv(ITO_SAMPLE_LAP.csv, ITO_SAMPLE_LAP.fileName);

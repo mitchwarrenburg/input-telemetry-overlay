@@ -65,7 +65,7 @@
     <div class="set-panel" role="tabpanel" id="panel-display" aria-labelledby="tab-display">
       <div class="set-section">Opacity</div>
       <label class="set-row">
-        <span class="row-head"><span>Background</span><output data-for="bgOpacity"></output></span>
+        <span class="row-head"><span>Background <small>graph</small></span><output data-for="bgOpacity"></output></span>
         <input type="range" min="0" max="100" step="1" data-setting="bgOpacity" data-unit="%">
       </label>
       <label class="set-row">
@@ -88,6 +88,18 @@
       <label class="set-toggle">
         <span>Countdown window<small>3-2-1-BRAKE into each reference brake point</small></span>
         <input type="checkbox" class="switch" data-setting="cueOn">
+      </label>
+      <label class="set-toggle" data-needs="cueOn">
+        <span>Compact<small>Just the bar, with the target, your pressure and your final pressure in it</small></span>
+        <input type="checkbox" class="switch" data-setting="cueCompact">
+      </label>
+      <label class="set-row" data-needs="cueOn">
+        <span class="row-head"><span>Background <small>this window</small></span><output data-for="cueBg"></output></span>
+        <input type="range" min="0" max="100" step="1" data-setting="cueBg" data-unit="%">
+      </label>
+      <label class="set-row" data-needs="cueOn">
+        <span class="row-head"><span>Contents <small>bar and text</small></span><output data-for="cueFg"></output></span>
+        <input type="range" min="30" max="100" step="1" data-setting="cueFg" data-unit="%">
       </label>
       <label class="set-row" data-needs="cueOn">
         <span class="row-head"><span>Countdown <small>3 counts</small></span><output data-for="cueLead"></output></span>

@@ -29,7 +29,10 @@ serve the folder (`python -m http.server 8617`) and visit `http://localhost:8617
   keeps a strip of pips with your grade in every zone. With **Brake points on the graph**
   on, the graph marks each reference brake point (red ▲ on the 0% line) and underlines your
   gap to it.
-  [`brake-cue.html`](brake-cue.html) is the design board: every state, the grades, sizes,
+  A collapse button (or **Compact** in settings) shrinks it to just the bar, showing the
+  next zone's target, your pressure now while braking, and your final pressure in the last
+  zone inside it; hovering shows a button to expand it again. It has its own background
+  and contents opacity. [`brake-cue.html`](brake-cue.html) is the design board: every state, the grades, sizes,
   the behaviour spec, and the peak label rules with examples.
 - **Resizing:** hover the overlay to show 8 anchors (corners and edges). Drag one to
   resize, or drag the header to move the overlay. Size and position are saved.
@@ -39,7 +42,7 @@ serve the folder (`python -m http.server 8617`) and visit `http://localhost:8617
 | Tab | Settings |
 |---|---|
 | Display | Background opacity, reference-fill opacity, lock size and position, reset layout |
-| Brakes | Brake point countdown on or off, countdown length, cue early by (reaction allowance), skip zones below a peak, beeps; the "good" and "perfect" timing windows; brake points on the graph; brake peak labels on or off, which traces get them (live, reference or both), minimum peak |
+| Brakes | Brake point countdown on or off, compact, background and contents opacity, countdown length, cue early by (reaction allowance), skip zones below a peak, beeps; the "good" and "perfect" timing windows; brake points on the graph; brake peak labels on or off, which traces get them (live, reference or both), minimum peak |
 | Timing | X-axis in distance or time; history behind the car; look-ahead; update rate (30 or 60 Hz) |
 | Reference | Loaded lap card (driver, car, track and lap time from the file name, plus a warning if it doesn't match the session); drop or browse for a CSV; show or hide the reference |
 

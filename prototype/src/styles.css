@@ -261,6 +261,9 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 .cue-pip.is-stale { opacity: 0.35; }
 .cue-pip.is-current { opacity: 1; box-shadow: 0 0 0 1.5px rgba(var(--hud-surface), 1), 0 0 0 2.5px var(--hud-text); }
 .cue-tools { display: flex; gap: 1px; }
+/* The window's own opacity settings: --bg-alpha for its background, --fg-alpha for
+   everything drawn on it. */
+.ito-cue > .cue-head, .ito-cue > .cue-body, .ito-cue > .cue-expand { opacity: var(--fg-alpha, 1); }
 .cue-tools .ito-gear { margin-left: 0; }
 .cue-head .ito-title { flex: none; }
 
@@ -373,6 +376,71 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 .cue-body[data-mode="braking"]:not([data-flash]) .cue-fill { opacity: 0; }
 .cue-body[data-mode="noref"] .cue-cap,
 .cue-body[data-mode="nozones"] .cue-cap { color: var(--hud-muted); }
+
+/* ---- Compact: just the bar ---- */
+.ito-cue.is-compact .cue-head,
+.ito-cue.is-compact .cue-verdict,
+.ito-cue.is-compact .cue-target,
+.ito-cue.is-compact .cue-msg { display: none; }
+.ito-cue.is-compact .cue-body { inset: 4px; grid-template-rows: minmax(0, 1fr); gap: 0; }
+.ito-cue.is-compact .cue-cap { width: clamp(40px, 13cqw, 72px); font-size: clamp(10px, 34cqh, 16px); }
+.ito-cue.is-compact .cue-body[data-mode="countdown"] .cue-cap span { font-size: clamp(16px, 62cqh, 30px); }
+.ito-cue.is-compact:not(.is-locked) { cursor: grab; }
+.ito-cue.is-compact.is-moving { cursor: grabbing; }
+
+/* The readout inside the bar (compact only): target, now or next, final. */
+.cue-info { display: none; }
+.ito-cue.is-compact .cue-info {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 8px;
+  pointer-events: none;
+  font: 700 clamp(11px, 36cqh, 14px)/1 var(--font-hud);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  /* A dark outline so the numbers read over any part of the fill. */
+  text-shadow: 0 0 2px rgb(var(--hud-surface)), 0 0 2px rgb(var(--hud-surface)), 0 0 3px rgb(var(--hud-surface));
+}
+/* Each on a faint dark backing, so it reads over any colour the bar takes. */
+.ci { display: inline-flex; align-items: baseline; gap: 4px; padding: 2px 5px; border-radius: 3px; background: rgba(var(--hud-surface), 0.5); }
+.ci-mid:empty, .ci-mid:has(b:empty) { background: none; }
+.ci[hidden] { display: none; }
+.ci small { font-size: 0.68em; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(232, 239, 238, 0.75); }
+.ci b { font-weight: 700; }
+.ci-target b { color: rgb(var(--target-rgb)); }
+.ci-mid { margin: 0 auto; color: var(--hud-muted); }
+.ci-mid b { font-weight: 600; letter-spacing: 0.04em; }
+.ci-mid.is-now b { color: rgb(var(--you-rgb)); font-weight: 700; letter-spacing: 0; }
+.ci-final b { color: rgb(var(--you-rgb)); }
+.ci-final em { font-style: normal; font-size: 0.8em; color: rgba(232, 239, 238, 0.8); }
+@container (max-width: 250px) { .ito-cue.is-compact .ci small { display: none; } }
+
+/* Expand button: only in compact, only while hovering. */
+.cue-expand {
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  z-index: 3;
+  width: 22px;
+  height: 22px;
+  margin-top: -11px;
+  display: none;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(46, 230, 160, 0.6);
+  border-radius: 6px;
+  background: rgba(var(--hud-surface), 0.92);
+  color: var(--hud-text);
+  cursor: pointer;
+}
+.cue-expand svg { stroke-width: 1.9; }
+.ito-cue.is-compact:not(.is-locked):hover .cue-expand { display: grid; }
+.cue-expand:hover { color: var(--accent); }
+.cue-expand:focus-visible { display: grid; outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* Target: the zone's reference peak, with your pressure filling up to it. */
 .cue-target { flex: none; display: flex; align-items: stretch; gap: 7px; margin-left: 7px; }

@@ -5,7 +5,8 @@
   const DIRS = ["n", "ne", "e", "se", "s", "sw", "w", "nw"];
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-  ITO.attachFrame = function (el, { handle, readout, minW = 260, minH = 90, onChange, onCommit }) {
+  // canMove(e): whether a press on `handle` may start a move (default: any but a button).
+  ITO.attachFrame = function (el, { handle, readout, minW = 260, minH = 90, onChange, onCommit, canMove }) {
     const anchors = DIRS.map((dir) => {
       const a = document.createElement("div");
       a.className = "ito-anchor";
@@ -71,7 +72,8 @@
       a.addEventListener("pointerdown", (e) => begin(e, a.dataset.dir, a));
     }
     handle.addEventListener("pointerdown", (e) => {
-      if (!e.target.closest("button")) begin(e, "move", handle);
+      if (e.target.closest("button, .ito-anchor") || (canMove && !canMove(e))) return;
+      begin(e, "move", handle);
     });
     for (const t of [...anchors, handle]) {
       t.addEventListener("pointermove", move);
@@ -79,6 +81,12 @@
       t.addEventListener("pointercancel", end);
     }
 
-    return { get, set };
+    // New minimum size (e.g. a window switching to a compact layout).
+    function setMin(w, h) {
+      minW = w;
+      minH = h;
+    }
+
+    return { get, set, setMin };
   };
 })(typeof window !== "undefined" ? window : globalThis);
