@@ -88,7 +88,8 @@
 
     // sc: { axis, behind, ahead, L, now, live, ref, showRef, refOpacity,
     //       labels: { show, mode, min }, headerH, obstacles: [{x,y,w,h}],
-    //       cue: brake point state from BrakeCue.update(), or null }
+    //       cue: brake point state from BrakeCue.update(), or null,
+    //       bgAlpha: the window's background opacity, 0–1 (default 1) }
     render(sc) {
       const { ctx, w, h } = this;
       ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
@@ -111,6 +112,12 @@
       const Y = (p) => plot.y + (1 - p) * plot.h;
       const cx = X(0);
       const fr = ref ? refFrame(sc, ref) : null;
+      // How far the window's background has faded: the fills and text get a dark backing
+      // of their own in proportion, so they don't wash out over a bright sim.
+      this.fade = 1 - (sc.bgAlpha == null ? 1 : sc.bgAlpha);
+      // Muted text lightens toward the text colour as the background fades.
+      const k = 0.55 * this.fade, mix = (a, b) => Math.round(a + (b - a) * k);
+      this.muted = `rgb(${mix(127, 232)}, ${mix(139, 239)}, ${mix(137, 238)})`;
       const margin = span * 0.02;
 
       // Grid: 0 / 50 / 100, solid hairlines.
@@ -177,10 +184,10 @@
 
       // Y labels.
       ctx.font = `600 10px ${FONT}`;
-      ctx.fillStyle = INK.muted;
+      ctx.fillStyle = this.muted;
       ctx.textAlign = "right";
       ctx.textBaseline = "middle";
-      for (const p of plot.h >= 56 ? [1, 0.5, 0] : [1, 0]) ctx.fillText(String(p * 100), plot.x - 6, Y(p) + 0.5);
+      for (const p of plot.h >= 56 ? [1, 0.5, 0] : [1, 0]) this.text(String(p * 100), plot.x - 6, Y(p) + 0.5);
 
       // X band: car-position pill, then ticks that don't collide with it.
       const placedX = [];
@@ -224,8 +231,8 @@
           const box = { x: x - tw / 2 - 2, y: bandY, w: tw + 4, h: 12 };
           if (box.x < plot.x - 6 || box.x + box.w > w - 2 || placedX.some((p) => overlaps(p, box, 3))) continue;
           placedX.push(box);
-          ctx.fillStyle = t.strong ? INK.text : INK.muted;
-          ctx.fillText(t.text, x, bandY + 6.5);
+          ctx.fillStyle = t.strong ? INK.text : this.muted;
+          this.text(t.text, x, bandY + 6.5);
         }
       }
 
@@ -281,6 +288,20 @@
       }
     }
 
+    // fillText with a dark halo as the background fades (the current fillStyle and font).
+    text(s, x, y) {
+      const { ctx } = this;
+      if (this.fade > 0) {
+        const fill = ctx.fillStyle;
+        ctx.lineJoin = "round";
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = `rgba(${INK.surface}, ${0.9 * this.fade})`;
+        ctx.strokeText(s, x, y);
+        ctx.fillStyle = fill;
+      }
+      ctx.fillText(s, x, y);
+    }
+
     fillArea(v, val, rgb, op, X, Y, plot) {
       if (v.length < 2) return;
       const ctx = this.ctx;
@@ -298,6 +319,13 @@
       }
       area.lineTo(X(v[v.length - 1]), base);
       area.closePath();
+      if (this.fade > 0) {
+        const d = this.ctx.createLinearGradient(0, plot.y, 0, base);
+        d.addColorStop(0, `rgba(${INK.surface}, ${0.55 * this.fade * op})`);
+        d.addColorStop(1, `rgba(${INK.surface}, ${0.12 * this.fade * op})`);
+        ctx.fillStyle = d;
+        ctx.fill(area);
+      }
       const g = this.ctx.createLinearGradient(0, plot.y, 0, base);
       g.addColorStop(0, `rgba(${rgb}, ${0.36 * op})`);
       g.addColorStop(1, `rgba(${rgb}, ${0.02 * op})`);

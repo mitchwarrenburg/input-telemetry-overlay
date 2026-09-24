@@ -180,7 +180,7 @@
 
     <section id="compact-mode">
       <h2>Compact</h2>
-      <p class="note" style="margin: -4px 0 12px">The collapse button in the header (or Settings → Brakes → <b>Compact</b>) shrinks the window to just the bar.
+      <p class="note" style="margin: -4px 0 12px">The collapse button in the header (or its settings → Window → <b>Compact</b>) shrinks the window to just the bar.
         Inside it: the <b style="color: rgb(245, 200, 80)">target</b> for the zone ahead, your pressure <b style="color: rgb(127, 209, 255)">now</b> while you're braking
         (else the distance to the next brake point), and your <b style="color: rgb(127, 209, 255)">final</b> pressure in the last zone. Each layout keeps its own height; the
         top-left corner and width carry over.</p>
@@ -189,8 +189,10 @@
 
     <section id="transparency">
       <h2>Transparency</h2>
-      <p class="note" style="margin: -4px 0 12px">Settings → Brakes has two opacities for this window, apart from the graph's:
-        <b>Background</b> (0–100%, default 80%) and <b>Contents</b> (30–100%, default 100%) for the bar, text and header.</p>
+      <p class="note" style="margin: -4px 0 12px">This window's settings (its gear) → Window has two opacities, apart from the graph's:
+        <b>Background</b> (0–100%, default 80%) and <b>Contents</b> (30–100%, default 100%) for the bar, text and header.
+        Background fades only the empty space: the bar and its box keep a dark backing in proportion, and grey text lightens and gets a
+        dark halo, so nothing washes out over a bright sim.</p>
       <div class="grid" id="alpha"></div>
     </section>
 
@@ -206,7 +208,7 @@
           <tr><td>Peak</td><td>Your highest pressure in the zone against the reference peak. The difference shows once you're off the brake.</td></tr>
           <tr><td>Hold</td><td>The timing row keeps the last zone's result until the next zone is decided. The zone strip keeps one result per zone for this lap and the last.</td></tr>
           <tr><td>Sound</td><td>Optional: a short beep on each count and a long, higher one on BRAKE.</td></tr>
-          <tr><td>Settings</td><td>Settings → <b>Brakes</b> (the Labels tab, renamed): countdown window on/off, compact, background and contents opacity, countdown length, cue early by, skip zones below, beeps; good window; brake points on the graph; then the existing peak label settings.</td></tr>
+          <tr><td>Settings</td><td>This window's gear: <b>Countdown</b> (length, cue early by, skip zones below, beeps), <b>Grades</b> (good and perfect windows, grade key), <b>Window</b> (show, compact, background and contents opacity, lock, reset) and <b>Reference</b>, shared with the graph. The graph's gear keeps Display (with the brake point window on/off and lock), Labels (peak labels and the brake point marks), Timing and Reference.</td></tr>
         </tbody>
       </table>
     </section>

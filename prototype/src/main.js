@@ -30,7 +30,8 @@
     cueFg: 100, // % opacity of what's drawn on it
     cueFrame: null, // full window
     cueCompactFrame: null, // compact bar
-    tab: "display",
+    tab: "display", // last tab in the graph's settings
+    cueTab: "countdown", // …and in the brake point window's
     frame: null,
   };
   const HEADER_H = 26;
@@ -180,7 +181,7 @@
     if (k !== "frame" && k !== "cueFrame" && k !== "cueCompactFrame") dirty = true;
   });
 
-  // Grade key in Settings → Brakes, with the thresholds for the current window.
+  // Grade key in the brake point window's settings → Grades, with the current thresholds.
   function renderGradeKey() {
     const t = settings.v.cueTol, p = Math.min(settings.v.cuePerfect, t), f = (x) => x.toFixed(2);
     // Tightest first: Perfect sits inside Good, so an early-to-late order would mislead.
@@ -201,9 +202,12 @@
 
   panel = ITO.initSettingsPanel({
     panel: document.getElementById("settings"),
-    gear: document.getElementById("gear"),
-    overlay,
-    others: [{ gear: cueView.gear, overlay: cueEl, tab: "brakes" }],
+    // Each window's gear opens its own settings; the Reference tab and the global rows
+    // (lock, the brake point window on/off) are in both.
+    owners: [
+      { id: "graph", gear: document.getElementById("gear"), overlay, title: "Graph settings", tabKey: "tab" },
+      { id: "cue", gear: cueView.gear, overlay: cueEl, title: "Brake point settings", tabKey: "cueTab" },
+    ],
     settings,
     reference: {
       session,
@@ -216,6 +220,7 @@
         settings.set("showRef", true);
         applyAppearance();
         panel.sync();
+        panel.refit();
         dirty = true;
       },
       remove() {
@@ -224,12 +229,13 @@
         cue.setReference(null, session.trackLength);
         applyAppearance();
         panel.sync();
+        panel.refit();
         dirty = true;
       },
     },
-    onResetLayout: () => {
-      settings.set("frame", frame.set(defaultFrame()));
-      settings.set(cueFrameKey(), cueFrame.set(defaultCueFrame()));
+    onResetLayout: (id) => {
+      if (id === "cue") settings.set(cueFrameKey(), cueFrame.set(defaultCueFrame()));
+      else settings.set("frame", frame.set(defaultFrame()));
     },
   });
   applyAppearance();
@@ -270,6 +276,7 @@
       ref: reference,
       showRef: v.showRef,
       refOpacity: v.refOpacity / 100,
+      bgAlpha: v.bgOpacity / 100,
       labels: { show: v.labels, mode: v.labelMode, min: v.labelMin / 100 },
       cue: v.cueGraph && cueState && cueState.cueZones ? cueState : null,
       headerH: HEADER_H,

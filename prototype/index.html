@@ -46,26 +46,32 @@
   <section id="cue" aria-label="Brake point countdown"></section>
 
   <!-- ================= Settings ================= -->
-  <div class="ito-settings" id="settings" role="dialog" aria-label="Overlay settings" hidden>
+  <div class="ito-settings" id="settings" role="dialog" aria-labelledby="setTitle" hidden>
     <div class="set-head">
-      <span>Overlay settings</span>
+      <span id="setTitle">Graph settings</span>
       <button class="icon-btn" type="button" data-close aria-label="Close settings">
         <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
       </button>
     </div>
 
+    <!-- Each window's gear shows its own tabs (data-for); Reference is in both. -->
     <div class="set-tabs" role="tablist">
-      <button type="button" role="tab" id="tab-display" aria-controls="panel-display" data-tab="display">Display</button>
-      <button type="button" role="tab" id="tab-brakes" aria-controls="panel-brakes" data-tab="brakes">Brakes</button>
-      <button type="button" role="tab" id="tab-timing" aria-controls="panel-timing" data-tab="timing">Timing</button>
-      <button type="button" role="tab" id="tab-reference" aria-controls="panel-reference" data-tab="reference">Reference</button>
+      <button type="button" role="tab" id="tab-display" aria-controls="panel-display" data-tab="display" data-for="graph">Display</button>
+      <button type="button" role="tab" id="tab-labels" aria-controls="panel-labels" data-tab="labels" data-for="graph">Labels</button>
+      <button type="button" role="tab" id="tab-timing" aria-controls="panel-timing" data-tab="timing" data-for="graph">Timing</button>
+      <button type="button" role="tab" id="tab-countdown" aria-controls="panel-countdown" data-tab="countdown" data-for="cue">Countdown</button>
+      <button type="button" role="tab" id="tab-grades" aria-controls="panel-grades" data-tab="grades" data-for="cue">Grades</button>
+      <button type="button" role="tab" id="tab-window" aria-controls="panel-window" data-tab="window" data-for="cue">Window</button>
+      <button type="button" role="tab" id="tab-reference" aria-controls="panel-reference" data-tab="reference" data-for="graph cue">Reference</button>
     </div>
 
+    <div class="set-body">
+    <!-- ======== Graph ======== -->
     <!-- Display -->
     <div class="set-panel" role="tabpanel" id="panel-display" aria-labelledby="tab-display">
       <div class="set-section">Opacity</div>
       <label class="set-row">
-        <span class="row-head"><span>Background <small>graph</small></span><output data-for="bgOpacity"></output></span>
+        <span class="row-head"><span>Background</span><output data-for="bgOpacity"></output></span>
         <input type="range" min="0" max="100" step="1" data-setting="bgOpacity" data-unit="%">
       </label>
       <label class="set-row">
@@ -76,66 +82,20 @@
       <hr class="set-divider">
       <div class="set-section">Layout</div>
       <label class="set-toggle">
-        <span>Lock size &amp; position<small>Hides the resize anchors</small></span>
+        <span>Lock size &amp; position<small>Both windows</small></span>
         <input type="checkbox" class="switch" data-setting="locked">
       </label>
-      <button type="button" class="btn" id="resetLayout">Reset size &amp; position</button>
-    </div>
+      <button type="button" class="btn" data-reset="graph">Reset size &amp; position</button>
 
-    <!-- Brakes: the brake point countdown, its timing grade, and brake peak labels -->
-    <div class="set-panel" role="tabpanel" id="panel-brakes" aria-labelledby="tab-brakes" hidden>
-      <div class="set-section">Brake point countdown</div>
+      <hr class="set-divider">
       <label class="set-toggle">
-        <span>Countdown window<small>3-2-1-BRAKE into each reference brake point</small></span>
+        <span>Brake point window<small>The countdown; its gear has its settings</small></span>
         <input type="checkbox" class="switch" data-setting="cueOn">
       </label>
-      <label class="set-toggle" data-needs="cueOn">
-        <span>Compact<small>Just the bar, with the target, your pressure and your final pressure in it</small></span>
-        <input type="checkbox" class="switch" data-setting="cueCompact">
-      </label>
-      <label class="set-row" data-needs="cueOn">
-        <span class="row-head"><span>Background <small>this window</small></span><output data-for="cueBg"></output></span>
-        <input type="range" min="0" max="100" step="1" data-setting="cueBg" data-unit="%">
-      </label>
-      <label class="set-row" data-needs="cueOn">
-        <span class="row-head"><span>Contents <small>bar and text</small></span><output data-for="cueFg"></output></span>
-        <input type="range" min="30" max="100" step="1" data-setting="cueFg" data-unit="%">
-      </label>
-      <label class="set-row" data-needs="cueOn">
-        <span class="row-head"><span>Countdown <small>3 counts</small></span><output data-for="cueLead"></output></span>
-        <input type="range" min="1.5" max="4.5" step="0.5" data-setting="cueLead" data-unit=" s">
-      </label>
-      <label class="set-row" data-needs="cueOn">
-        <span class="row-head"><span>Cue early by <small>reaction allowance</small></span><output data-for="cueEarly"></output></span>
-        <input type="range" min="0" max="0.3" step="0.05" data-setting="cueEarly" data-unit=" s" data-decimals="2">
-      </label>
-      <label class="set-row" data-needs="cueOn">
-        <span class="row-head"><span>Skip zones below <small>reference peak</small></span><output data-for="cueMin"></output></span>
-        <input type="range" min="0" max="50" step="1" data-setting="cueMin" data-unit="%">
-      </label>
-      <label class="set-toggle" data-needs="cueOn">
-        <span>Beeps<small>One per count, a long one on BRAKE</small></span>
-        <input type="checkbox" class="switch" data-setting="cueBeep">
-      </label>
+    </div>
 
-      <hr class="set-divider">
-      <div class="set-section">Brake timing</div>
-      <label class="set-row">
-        <span class="row-head"><span>Good within <small>of the reference</small></span><output data-for="cueTol"></output></span>
-        <input type="range" min="0.02" max="0.2" step="0.01" data-setting="cueTol" data-unit=" s" data-decimals="2" data-prefix="±">
-      </label>
-      <label class="set-row">
-        <span class="row-head"><span>Perfect within <small>inside good</small></span><output data-for="cuePerfect"></output></span>
-        <input type="range" min="0.01" max="0.06" step="0.01" data-setting="cuePerfect" data-unit=" s" data-decimals="2" data-prefix="±">
-      </label>
-      <div class="grade-key" id="gradeKey"></div>
-      <label class="set-toggle">
-        <span>Brake points on the graph<small>Marks each one and underlines your gap to it</small></span>
-        <input type="checkbox" class="switch" data-setting="cueGraph">
-      </label>
-
-      <hr class="set-divider">
-      <div class="set-section">Peak labels</div>
+    <!-- Labels -->
+    <div class="set-panel" role="tabpanel" id="panel-labels" aria-labelledby="tab-labels" hidden>
       <label class="set-toggle">
         <span>Brake peak labels<small>Max % reached in each braking zone</small></span>
         <input type="checkbox" class="switch" data-setting="labels">
@@ -156,6 +116,12 @@
         <span><i class="key-pill key-live">82%</i>Your peak, on its apex</span>
         <span><i class="key-pill key-ref">76%</i>Reference peak, top of its line</span>
       </div>
+
+      <hr class="set-divider">
+      <label class="set-toggle">
+        <span>Brake points<small>Marks each reference brake point and underlines your gap to it in its grade's colour</small></span>
+        <input type="checkbox" class="switch" data-setting="cueGraph">
+      </label>
     </div>
 
     <!-- Timing -->
@@ -195,6 +161,72 @@
       </div>
     </div>
 
+    <!-- ======== Brake point window ======== -->
+    <!-- Countdown -->
+    <div class="set-panel" role="tabpanel" id="panel-countdown" aria-labelledby="tab-countdown" hidden>
+      <label class="set-row" data-needs="cueOn">
+        <span class="row-head"><span>Countdown <small>3 counts</small></span><output data-for="cueLead"></output></span>
+        <input type="range" min="1.5" max="4.5" step="0.5" data-setting="cueLead" data-unit=" s">
+      </label>
+      <label class="set-row" data-needs="cueOn">
+        <span class="row-head"><span>Cue early by <small>reaction allowance</small></span><output data-for="cueEarly"></output></span>
+        <input type="range" min="0" max="0.3" step="0.05" data-setting="cueEarly" data-unit=" s" data-decimals="2">
+      </label>
+      <label class="set-row" data-needs="cueOn">
+        <span class="row-head"><span>Skip zones below <small>reference peak</small></span><output data-for="cueMin"></output></span>
+        <input type="range" min="0" max="50" step="1" data-setting="cueMin" data-unit="%">
+      </label>
+      <label class="set-toggle" data-needs="cueOn">
+        <span>Beeps<small>One per count, a long one on BRAKE</small></span>
+        <input type="checkbox" class="switch" data-setting="cueBeep">
+      </label>
+    </div>
+
+    <!-- Grades -->
+    <div class="set-panel" role="tabpanel" id="panel-grades" aria-labelledby="tab-grades" hidden>
+      <label class="set-row">
+        <span class="row-head"><span>Good within <small>of the reference</small></span><output data-for="cueTol"></output></span>
+        <input type="range" min="0.02" max="0.2" step="0.01" data-setting="cueTol" data-unit=" s" data-decimals="2" data-prefix="±">
+      </label>
+      <label class="set-row">
+        <span class="row-head"><span>Perfect within <small>inside good</small></span><output data-for="cuePerfect"></output></span>
+        <input type="range" min="0.01" max="0.06" step="0.01" data-setting="cuePerfect" data-unit=" s" data-decimals="2" data-prefix="±">
+      </label>
+      <div class="grade-key" id="gradeKey"></div>
+    </div>
+
+    <!-- Window -->
+    <div class="set-panel" role="tabpanel" id="panel-window" aria-labelledby="tab-window" hidden>
+      <label class="set-toggle">
+        <span>Show this window<small>Also on the graph's Display tab</small></span>
+        <input type="checkbox" class="switch" data-setting="cueOn">
+      </label>
+      <label class="set-toggle" data-needs="cueOn">
+        <span>Compact<small>Just the bar</small></span>
+        <input type="checkbox" class="switch" data-setting="cueCompact">
+      </label>
+
+      <hr class="set-divider">
+      <div class="set-section">Opacity</div>
+      <label class="set-row" data-needs="cueOn">
+        <span class="row-head"><span>Background</span><output data-for="cueBg"></output></span>
+        <input type="range" min="0" max="100" step="1" data-setting="cueBg" data-unit="%">
+      </label>
+      <label class="set-row" data-needs="cueOn">
+        <span class="row-head"><span>Contents <small>bar and text</small></span><output data-for="cueFg"></output></span>
+        <input type="range" min="30" max="100" step="1" data-setting="cueFg" data-unit="%">
+      </label>
+
+      <hr class="set-divider">
+      <div class="set-section">Layout</div>
+      <label class="set-toggle">
+        <span>Lock size &amp; position<small>Both windows</small></span>
+        <input type="checkbox" class="switch" data-setting="locked">
+      </label>
+      <button type="button" class="btn" data-reset="cue">Reset size &amp; position</button>
+    </div>
+
+    <!-- ======== Both ======== -->
     <!-- Reference -->
     <div class="set-panel" role="tabpanel" id="panel-reference" aria-labelledby="tab-reference" hidden>
       <div class="ref-card" id="refCard" hidden>
@@ -228,6 +260,7 @@
         <input type="checkbox" class="switch" data-setting="showRef">
       </label>
       <p class="set-hint">Lined up by lap distance, so a lap of any pace matches corner for corner.</p>
+    </div>
     </div>
 
     <div class="set-foot">

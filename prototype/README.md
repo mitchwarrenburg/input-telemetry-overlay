@@ -39,12 +39,23 @@ serve the folder (`python -m http.server 8617`) and visit `http://localhost:8617
 - **Gear (top right):** opens the settings. The panel sits outside the overlay so you can
   see changes as you make them.
 
-| Tab | Settings |
-|---|---|
-| Display | Background opacity, reference-fill opacity, lock size and position, reset layout |
-| Brakes | Brake point countdown on or off, compact, background and contents opacity, countdown length, cue early by (reaction allowance), skip zones below a peak, beeps; the "good" and "perfect" timing windows; brake points on the graph; brake peak labels on or off, which traces get them (live, reference or both), minimum peak |
-| Timing | X-axis in distance or time; history behind the car; look-ahead; update rate (30 or 60 Hz) |
-| Reference | Loaded lap card (driver, car, track and lap time from the file name, plus a warning if it doesn't match the session); drop or browse for a CSV; show or hide the reference |
+Each window's gear opens its own settings. The panel is as tall as that window's tallest
+tab, so switching tabs never resizes or moves it; on a screen too short for it, only the
+tab's contents scroll, with shadows at the edges while there's more.
+
+| Window | Tab | Settings |
+|---|---|---|
+| Graph | Display | Background and reference-fill opacity; lock size and position (both windows); reset this window; brake point window on or off |
+| Graph | Labels | Brake peak labels on or off, which traces get them (live, reference or both), minimum peak; brake point marks on the graph |
+| Graph | Timing | X-axis in distance or time; history behind the car; look-ahead; update rate (30 or 60 Hz) |
+| Brake point | Countdown | Countdown length, cue early by (reaction allowance), skip zones below a peak, beeps |
+| Brake point | Grades | The "good" and "perfect" timing windows, with the grade key |
+| Brake point | Window | Show this window, compact, background and contents opacity, lock size and position (both windows), reset this window |
+| Both | Reference | Loaded lap card (driver, car, track and lap time from the file name, plus a warning if it doesn't match the session); drop or browse for a CSV; show or hide the reference |
+
+Background opacity fades only the empty space: the bar, the reference fills and the text
+keep a dark backing of their own in proportion, and grey text lightens, so they don't wash
+out over a bright sim.
 
 The overlay reflows as it's resized. The legend hides below 540 px wide, the title
 shortens to "THR / BRK" below 330 px, and the x-axis labels hide below 118 px tall.
