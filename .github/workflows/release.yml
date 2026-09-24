@@ -54,6 +54,9 @@ jobs:
       - if: github.ref_type == 'tag'
         run: cargo test
       - run: cargo build --release
+      - name: Build the installer
+        shell: pwsh
+        run: ./installer/build.ps1 -Version ${{ steps.version.outputs.version }}
       - name: Package
         shell: pwsh
         run: |
@@ -66,5 +69,7 @@ jobs:
         with:
           tag_name: v${{ steps.version.outputs.version }}
           target_commitish: ${{ github.sha }}
-          files: input-telemetry-overlay-*-windows-x64.zip
+          files: |
+            target/installer/input-telemetry-overlay-*-windows-x64-setup.exe
+            input-telemetry-overlay-*-windows-x64.zip
           generate_release_notes: true

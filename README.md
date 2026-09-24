@@ -25,13 +25,21 @@ by itself.
 
 ## Install
 
-1. Download `input-telemetry-overlay-<version>-windows-x64.zip` from
-   [Releases](../../releases) and unzip it anywhere.
-2. Run `input-telemetry-overlay.exe`.
+1. From [Releases](../../releases), download either:
+   - `input-telemetry-overlay-<version>-windows-x64-setup.exe`, the installer. It installs
+     for your Windows user without asking for administrator rights, and adds a Start menu
+     shortcut, an uninstaller in **Settings → Apps**, and **Open with** for Garage 61
+     CSVs. Run a newer one to upgrade.
+   - `input-telemetry-overlay-<version>-windows-x64.zip`, the same program to unzip and
+     run from anywhere.
+2. Run the installer, or `input-telemetry-overlay.exe` from the zip. They aren't code
+   signed, so Windows may warn that it protected your PC: choose **More info → Run
+   anyway**.
 3. In iRacing, use **windowed** or **borderless** display mode. Overlays can't draw on
    top of exclusive full screen.
 
-Windows 10 or 11 with OpenGL 2 or newer (any GPU from the last decade).
+Windows 10 or 11 with OpenGL 2 or newer (any GPU from the last decade). Uninstalling
+keeps your settings and saved laps in `%APPDATA%\input-telemetry-overlay`.
 
 With iRacing closed, the overlay runs a demo lap so you can position it and try the
 settings. Turn that off in **Settings → Display**.
@@ -180,10 +188,14 @@ settings panel on their own.
 ### Releases
 
 Every push to `main` (a merged pull request, or a direct push) that passes CI is released
-automatically: the Windows zip is built and published on [Releases](../../releases) as the
-next patch version, with notes on what changed since the last one. For a minor or major
-release, raise the version in `Cargo.toml` first. A `vX.Y.Z` tag pushed by hand is
-released too.
+automatically: the installer and the zip are built and published on
+[Releases](../../releases) as the next patch version, with notes on what changed since the
+last one. For a minor or major release, raise the version in `Cargo.toml` first. A
+`vX.Y.Z` tag pushed by hand is released too.
+
+The installer is made with [Inno Setup](https://jrsoftware.org/isinfo.php) 6.3 or newer:
+`installer/build.ps1` after `cargo build --release` puts it in `target\installer`. CI
+builds it for every change, installs it, checks it and uninstalls it.
 
 ### How it's put together
 
