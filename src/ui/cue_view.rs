@@ -124,10 +124,12 @@ pub fn show(ui: &Ui, window: Rect, f: &CueFrame) -> Option<CueIntent> {
 
     let mut intent = None;
     if f.compact {
-        // No header: the whole bar moves the window.
+        // No header: the whole bar moves the window, except from the expand button, which
+        // a move would take the click from.
         if !chrome.locked {
             let drag = ui.interact(layout.panel, ui.id().with("cue-move"), Sense::drag());
-            if drag.on_hover_cursor(CursorIcon::Grab).drag_started_by(PointerButton::Primary) {
+            let on_expand = ui.input(|i| i.pointer.press_origin()).is_some_and(|p| expand_rect(content).contains(p));
+            if drag.on_hover_cursor(CursorIcon::Grab).drag_started_by(PointerButton::Primary) && !on_expand {
                 intent = Some(CueIntent::Move);
             }
         }
@@ -393,9 +395,14 @@ fn paint_icon(painter: &Painter, rect: Rect, icon: &[&[(f32, f32)]], width: f32,
     }
 }
 
+/// Where compact mode's expand button goes: 7 pt in from the bar's right end.
+fn expand_rect(content: Rect) -> Rect {
+    Rect::from_center_size(pos2(content.right() - 7.0 - 11.0, content.center().y), Vec2::splat(22.0))
+}
+
 /// Compact mode's expand button, at the bar's right end while hovered. True when clicked.
 fn expand_button(ui: &Ui, painter: &Painter, content: Rect, hover: f32) -> bool {
-    let rect = Rect::from_center_size(pos2(content.right() - 7.0 - 11.0, content.center().y), Vec2::splat(22.0));
+    let rect = expand_rect(content);
     let resp = ui
         .interact(rect, ui.id().with("cue-expand"), Sense::click())
         .on_hover_cursor(CursorIcon::PointingHand)
@@ -802,9 +809,125 @@ fn readout_item(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cue::{BrakeCue, CueConfig};
+    use crate::trace::LiveTrace;
+    use eframe::egui::{self, Event};
 
     fn window(w: f32, h: f32) -> Rect {
         Rect::from_min_size(Pos2::ZERO, vec2(w, h) + Vec2::splat(2.0 * overlay::MARGIN))
+    }
+
+    /// The window in a headless egui, fed pointer events.
+    struct Harness {
+        ctx: egui::Context,
+        window: Rect,
+        compact: bool,
+        locked: bool,
+    }
+
+    impl Harness {
+        fn new(panel: Vec2, compact: bool) -> Self {
+            let ctx = egui::Context::default();
+            theme::install_fonts(&ctx);
+            let window = window(panel.x, panel.y);
+            let h = Self { ctx, window, compact, locked: false };
+            h.frame(Vec::new());
+            h.frame(Vec::new());
+            h
+        }
+
+        fn frame(&self, events: Vec<Event>) -> Option<CueIntent> {
+            let state = BrakeCue::new().update(None, &LiveTrace::new(), None, 0.0, &CueConfig::default());
+            let chrome = Chrome {
+                opacity: 0.8,
+                locked: self.locked,
+                settings_open: false,
+                reference_time: None,
+                badges: &[],
+                file_hover: false,
+                resizing: false,
+                pulse: 0.0,
+            };
+            let f = CueFrame { state: &state, chrome, compact: self.compact, contents: 1.0, pop: 1.0 };
+            let input = egui::RawInput { screen_rect: Some(self.window), events, ..Default::default() };
+            let mut intent = None;
+            let mut out = self.ctx.run_ui(input, |ui| intent = show(ui, self.window, &f));
+            out.textures_delta.clear();
+            intent
+        }
+
+        /// Moves there (a frame to hover), then presses and releases: what each frame asked for.
+        fn click(&self, at: Pos2) -> Vec<CueIntent> {
+            let button = |pressed| Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            [vec![Event::PointerMoved(at)], vec![button(true)], vec![button(false)], Vec::new()]
+                .into_iter()
+                .filter_map(|events| self.frame(events))
+                .collect()
+        }
+
+        /// Moves there, presses and drags 20 pt right.
+        fn drag(&self, at: Pos2) -> Vec<CueIntent> {
+            let button = |pos, pressed| Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            let to = at + vec2(20.0, 0.0);
+            [
+                vec![Event::PointerMoved(at)],
+                vec![button(at, true)],
+                vec![Event::PointerMoved(to)],
+                vec![button(to, false)],
+            ]
+            .into_iter()
+            .filter_map(|events| self.frame(events))
+            .collect()
+        }
+    }
+
+    #[test]
+    fn the_header_moves_the_window_and_its_buttons_do_what_they_say() {
+        let h = Harness::new(DEFAULT_PANEL, false);
+        let header = overlay::header_rect(h.window);
+        let close = overlay::close_rect(header);
+        let gear = close.translate(vec2(-(GEAR_SIZE + BUTTON_GAP), 0.0));
+        let collapse = gear.translate(vec2(-(GEAR_SIZE + BUTTON_GAP), 0.0));
+        assert_eq!(h.drag(header.left_center() + vec2(40.0, 0.0)), [CueIntent::Move]);
+        assert_eq!(h.click(collapse.center()), [CueIntent::Compact(true)]);
+        assert_eq!(h.click(gear.center()), [CueIntent::ToggleSettings]);
+        assert_eq!(h.click(close.center()), [CueIntent::Close]);
+        // The bar itself doesn't move the full window.
+        assert!(h.drag(h.window.center() + vec2(0.0, 5.0)).is_empty());
+        // An edge resizes it.
+        assert_eq!(h.drag(h.window.right_center() - vec2(3.0, 0.0)), [CueIntent::Resize(ResizeDirection::East)]);
+    }
+
+    #[test]
+    fn the_compact_bar_moves_the_window_and_hovering_shows_expand() {
+        let h = Harness::new(vec2(DEFAULT_PANEL.x, COMPACT_HEIGHT), true);
+        assert_eq!(h.drag(h.window.center() - vec2(60.0, 0.0)), [CueIntent::Move]);
+        let content = overlay::content_rect(h.window);
+        let expand = pos2(content.right() - 18.0, content.center().y);
+        assert_eq!(h.click(expand), [CueIntent::Compact(false)], "a click, not a move");
+        assert_eq!(h.drag(h.window.right_center() - vec2(3.0, 0.0)), [CueIntent::Resize(ResizeDirection::East)]);
+    }
+
+    #[test]
+    fn a_locked_window_ignores_drags() {
+        let mut h = Harness::new(DEFAULT_PANEL, false);
+        h.locked = true;
+        let header = overlay::header_rect(h.window);
+        assert!(h.drag(header.left_center() + vec2(40.0, 0.0)).is_empty());
+        assert!(h.drag(h.window.right_center() - vec2(3.0, 0.0)).is_empty());
+        let mut compact = Harness::new(vec2(DEFAULT_PANEL.x, COMPACT_HEIGHT), true);
+        compact.locked = true;
+        assert!(compact.drag(compact.window.center()).is_empty());
     }
 
     #[test]
