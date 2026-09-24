@@ -29,9 +29,10 @@ serve the folder (`python -m http.server 8617`) and visit `http://localhost:8617
   keeps a strip of pips with your grade in every zone. With **Brake points on the graph**
   on, the graph marks each reference brake point (red ▲ on the 0% line) and underlines your
   gap to it.
-  A collapse button (or **Compact** in settings) shrinks it to just the bar, showing the
-  next zone's target, your pressure now while braking, and your final pressure in the last
-  zone inside it; hovering shows a button to expand it again. It has its own background
+  A collapse button (or **Compact** in settings) shrinks it to just the bar, with one
+  number centred in each third: the next zone's target; your pressure now while braking,
+  then your final pressure in that zone for 3 s; and the distance to the next brake point.
+  Hovering shows a button to expand it again. It has its own background
   and contents opacity. [`brake-cue.html`](brake-cue.html) is the design board: every state, the grades, sizes,
   the behaviour spec, and the peak label rules with examples.
 - **Resizing:** hover the overlay to show 8 anchors (corners and edges). Drag one to

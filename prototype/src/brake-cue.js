@@ -22,6 +22,7 @@
   const VERY = 3;
   const FLASH_HOLD = 0.8; // s the bar shows your grade's colour after you brake…
   const FLASH_DRAIN = 0.3; // …then fades out over this
+  const FINAL_HOLD = 3; // s the compact bar shows your final pressure after you release
   const MATCH_BEFORE = 4; // s: a brake-on this long before a brake point still counts as that zone's
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
@@ -155,6 +156,7 @@
         live: now.brake,
         peak: null,
         flash: null, // { grade, alpha }: the bar in your grade's colour, just after you brake
+        final: null, // { peak, target, age }: your last zone's peak, for FINAL_HOLD s after release
         verdict: null,
         pips: null,
         cueZones: cueIdx,
@@ -196,6 +198,15 @@
           peak: v.event ? v.event.peak : null,
           target: zones[v.k].peak,
         };
+      }
+
+      // Your final pressure in the zone you just left: for FINAL_HOLD s after you release,
+      // and only until the next countdown starts.
+      const lastKey = this.order[this.order.length - 1];
+      const last = lastKey && this.results.get(lastKey);
+      if (last && last.event && !last.event.active && last.event.offT != null && st.mode === "idle") {
+        const age = now.t - last.event.offT;
+        if (age <= FINAL_HOLD) st.final = { peak: last.event.peak, target: zones[last.k].peak, age };
       }
 
       // One pip per zone: this lap's grade, else last lap's (dimmed).
@@ -256,8 +267,8 @@
           <span class="cue-msg"></span>
           <span class="cue-info" aria-hidden="true">
             <span class="ci ci-target"><small>Tgt</small><b></b></span>
-            <span class="ci ci-mid"><small></small><b></b></span>
-            <span class="ci ci-final"><small>Final</small><b></b><em></em></span>
+            <span class="ci ci-you"><small></small><b></b><em></em></span>
+            <span class="ci ci-next"><small></small><b></b></span>
           </span>
         </div>
         <div class="cue-cap"><span></span></div>
@@ -296,9 +307,10 @@
         close: $(".cue-close"),
         collapse: $(".cue-collapse"),
         expand: $(".cue-expand"),
-        ciTarget: $(".ci-target b"),
-        ciMid: $(".ci-mid"),
-        ciFinal: $(".ci-final"),
+        info: $(".cue-info"),
+        ciTarget: $(".ci-target"),
+        ciYou: $(".ci-you"),
+        ciNext: $(".ci-next"),
         readout: $(".ito-size"),
         body: $(".cue-body"),
         next: $(".cue-next"),
@@ -382,28 +394,34 @@
       });
     }
 
-    // Compact mode's readout inside the bar: the target for the zone ahead (gold), your
-    // pressure now while you're on the brake (light blue), and, between zones, your final
-    // pressure in the last one (the peak you reached) against its target.
+    // Compact mode's readout inside the bar, one number centred in each third:
+    //   1. the target for the zone ahead (gold);
+    //   2. you (light blue): your pressure now while you're on the brake, then your final
+    //      pressure in that zone (its peak) against its target, for 3 s or until the next
+    //      countdown starts;
+    //   3. the distance to the next brake point, between zones.
+    // Without a reference lap, the message spans all three.
     renderCompact(s) {
-      this.ciTarget.textContent = s.target != null ? pct(s.target) : "–";
-      this.ciTarget.parentElement.hidden = s.target == null;
-      const onBrake = (s.live || 0) > 0.02;
-      const mid = this.ciMid;
-      mid.classList.toggle("is-now", onBrake);
-      mid.firstChild.textContent = onBrake ? "Now" : s.mode === "idle" ? "Next" : "";
-      mid.lastChild.textContent = onBrake ? pct(s.live) :
-        s.mode === "idle" ? distText(s.dist) :
-        s.mode === "noref" ? "No reference lap" : s.mode === "nozones" ? "No brake zones" : "";
-      const v = s.verdict;
-      // Between zones only: counting down and braking, it would be the wrong zone's.
-      const fin = v && v.peak != null && s.mode === "idle" ? v : null;
-      this.ciFinal.hidden = !fin;
-      if (fin) {
-        const diff = Math.round(fin.peak * 100) - Math.round(fin.target * 100);
-        this.ciFinal.children[1].textContent = pct(fin.peak);
-        this.ciFinal.children[2].textContent = diff ? signed(diff, 0, "") : "±0";
-      }
+      const put = (el, label, value, extra) => {
+        el.hidden = value == null;
+        if (value == null) return;
+        el.children[0].textContent = label;
+        el.children[1].textContent = value;
+        if (el.children[2]) el.children[2].textContent = extra || "";
+      };
+      const message = s.mode === "noref" ? "No reference lap" : s.mode === "nozones" ? "No brake zones" : null;
+      this.info.classList.toggle("is-message", !!message);
+      put(this.ciTarget, "Tgt", s.target != null && !message ? pct(s.target) : null);
+
+      const onBrake = (s.live || 0) > 0.02, f = s.final;
+      this.ciYou.classList.toggle("is-final", !onBrake && !!f);
+      if (onBrake) put(this.ciYou, "Now", pct(s.live));
+      else if (f) {
+        const diff = Math.round(f.peak * 100) - Math.round(f.target * 100);
+        put(this.ciYou, "Final", pct(f.peak), diff ? signed(diff, 0, "") : "±0");
+      } else put(this.ciYou, "", null);
+
+      put(this.ciNext, message ? "" : "Next", message || (s.mode === "idle" ? distText(s.dist) : null));
     }
   }
 

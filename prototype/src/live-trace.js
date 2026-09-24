@@ -13,7 +13,7 @@
       this.b = [];
       this.th = [];
       this.head = 0; // first live index; older entries await compaction
-      this.events = []; // { peak, peakT, peakD, active, onT, onD, onLap, onPct }
+      this.events = []; // { peak, peakT, peakD, active, onT, onD, onLap, onPct, offT }
       this.current = null;
       this.last = null;
     }
@@ -34,7 +34,7 @@
         }
       } else {
         if (s.brake > ev.peak) Object.assign(ev, { peak: s.brake, peakT: s.t, peakD: s.D });
-        if (s.brake < ITO.BRAKE_OFF) { ev.active = false; this.current = null; }
+        if (s.brake < ITO.BRAKE_OFF) { ev.active = false; ev.offT = s.t; this.current = null; }
       }
     }
 

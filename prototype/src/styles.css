@@ -399,16 +399,15 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 .ito-cue.is-compact:not(.is-locked) { cursor: grab; }
 .ito-cue.is-compact.is-moving { cursor: grabbing; }
 
-/* The readout inside the bar (compact only): target, now or next, final. */
+/* The readout inside the bar (compact only): one number centred in each of the bar's
+   thirds, so none crosses the lines between the counts. */
 .cue-info { display: none; }
 .ito-cue.is-compact .cue-info {
   position: absolute;
   inset: 0;
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 0 8px;
   pointer-events: none;
   font: 700 clamp(11px, 36cqh, 14px)/1 var(--font-hud);
   font-variant-numeric: tabular-nums;
@@ -417,17 +416,31 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
   text-shadow: 0 0 2px rgb(var(--hud-surface)), 0 0 2px rgb(var(--hud-surface)), 0 0 3px rgb(var(--hud-surface));
 }
 /* Each on a faint dark backing, so it reads over any colour the bar takes. */
-.ci { display: inline-flex; align-items: baseline; gap: 4px; padding: 2px 5px; border-radius: 3px; background: rgba(var(--hud-surface), 0.5); }
-.ci-mid:empty, .ci-mid:has(b:empty) { background: none; }
+.ci {
+  grid-row: 1;
+  justify-self: center;
+  max-width: calc(100% - 6px);
+  overflow: hidden;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: rgba(var(--hud-surface), 0.5);
+}
 .ci[hidden] { display: none; }
 .ci small { font-size: 0.68em; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(232, 239, 238, 0.75); }
+.ci small:empty { display: none; }
 .ci b { font-weight: 700; }
+.ci em { font-style: normal; font-size: 0.8em; color: rgba(232, 239, 238, 0.8); }
+.ci em:empty { display: none; }
+.ci-target { grid-column: 1; }
 .ci-target b { color: rgb(var(--target-rgb)); }
-.ci-mid { margin: 0 auto; color: var(--hud-muted); }
-.ci-mid b { font-weight: 600; letter-spacing: 0.04em; }
-.ci-mid.is-now b { color: rgb(var(--you-rgb)); font-weight: 700; letter-spacing: 0; }
-.ci-final b { color: rgb(var(--you-rgb)); }
-.ci-final em { font-style: normal; font-size: 0.8em; color: rgba(232, 239, 238, 0.8); }
+.ci-you { grid-column: 2; }
+.ci-you b { color: rgb(var(--you-rgb)); }
+.ci-next { grid-column: 3; color: var(--hud-muted); }
+.ci-next b { font-weight: 600; letter-spacing: 0.04em; }
+.cue-info.is-message .ci-next { grid-column: 1 / -1; }
 @container (max-width: 250px) { .ito-cue.is-compact .ci small { display: none; } }
 
 /* Expand button: only in compact, only while hovering. */
