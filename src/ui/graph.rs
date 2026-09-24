@@ -3,16 +3,15 @@
 use std::sync::Arc;
 
 use eframe::egui::{
-    Align2, Color32, CornerRadius, FontId, Galley, Mesh, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2, pos2,
-    vec2,
+    Align2, Color32, CornerRadius, Galley, Mesh, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, Vec2, pos2, vec2,
 };
 
+use crate::cue::Mark;
 use crate::lap::Lap;
 use crate::settings::{Axis, LabelMode};
 use crate::trace::{LiveSample, LiveTrace};
-use crate::ui::graph_layout::{
-    self as layout, Connector, Decimator, LabelPlacer, LabelSpot, Peak, PlotLayout, Scale, XBand, laps_in_view,
-};
+use crate::ui::graph_layout::{self as layout, Decimator, Pin, PlotLayout, Scale, XBand, laps_in_view, place_rail};
+use crate::ui::overlay;
 use crate::ui::theme::{self, Weight};
 
 /// The car right now.
@@ -56,14 +55,28 @@ pub struct GraphScene<'a> {
     pub obstacles: &'a [Rect],
     /// Centred two-line message (title, detail), e.g. ("NO REFERENCE LAP", "Drop a Garage 61 CSV here").
     pub message: Option<(&'a str, &'a str)>,
+    /// The reference brake points to mark, and your gaps to them; `None`: not shown.
+    pub brake_points: Option<BrakePoints<'a>>,
+    /// How far the panel's background has faded (1 − its opacity): the fills and text
+    /// get a dark backing of their own in proportion, so they don't wash out.
+    pub fade: f32,
+}
+
+/// What the brake point countdown knows, for the graph.
+#[derive(Debug, Clone, Copy)]
+pub struct BrakePoints<'a> {
+    /// Indices of the reference zones that get a countdown.
+    pub zones: &'a [usize],
+    /// Your graded brake-ons.
+    pub marks: &'a [Mark],
 }
 
 /// Start/finish hairline: white @ 22%.
 const START_FINISH: Color32 = Color32::from_rgba_premultiplied(56, 56, 56, 56);
 /// Car cursor: white @ 92%.
 const CURSOR: Color32 = Color32::from_rgba_premultiplied(235, 235, 235, 235);
-/// Reference-label connector: white @ 40%.
-const REF_CONNECTOR: Color32 = Color32::from_rgba_premultiplied(102, 102, 102, 102);
+/// Dark outline around your peaks' numbers and pointers.
+const PIN_OUTLINE: Color32 = Color32::from_rgba_premultiplied(6, 8, 9, 235); // surface @ 92%
 /// Reference samples at or below this are on the floor: no edge line there.
 const FLOOR: f32 = 0.004;
 /// Extra window drawn past each side (fraction of the span) so lines run off the edges.
@@ -76,20 +89,26 @@ const MIDDLE_BASELINE: Vec2 = vec2(0.0, -1.0);
 /// already painted). Draws nothing outside `panel`.
 pub fn paint(painter: &Painter, panel: Rect, scene: &GraphScene) {
     let painter = painter.with_clip_rect(panel);
-    let Some(PlotLayout { plot, compact, x_band }) = PlotLayout::new(panel, scene.header_height) else {
+    let rail = scene.labels.show && scene.reference.is_some() && scene.labels.mode != LabelMode::Live;
+    let Some(PlotLayout { plot, compact, x_band }) = PlotLayout::new(panel, scene.header_height, rail) else {
         return;
     };
-    paint_grid(&painter, plot);
+    let muted = theme::muted(scene.fade);
+    paint_grid(&painter, plot, muted, scene.fade);
     let view = View::new(&painter, panel, plot, scene);
     if let Some(view) = &view {
-        view.paint_data();
-        let dots = view.paint_cursor();
-        let mut obstacles: Vec<Rect> = scene.obstacles.iter().copied().chain(dots).collect();
-        if x_band {
-            obstacles.extend(view.paint_x_band(compact));
+        let ref_peaks = if rail { view.ref_peaks() } else { Vec::new() };
+        let live_peaks =
+            if scene.labels.show && scene.labels.mode != LabelMode::Reference { view.live_peaks() } else { Vec::new() };
+        view.paint_data(&ref_peaks, &live_peaks);
+        if let Some(points) = scene.brake_points {
+            view.paint_brake_points(points);
         }
-        if scene.labels.show {
-            view.paint_peak_labels(obstacles);
+        view.paint_cursor();
+        let rail_labels = view.paint_rail(&ref_peaks);
+        view.paint_pins(&live_peaks, scene.obstacles.iter().copied().chain(rail_labels).collect());
+        if x_band {
+            view.paint_x_band(compact, muted);
         }
     }
     if let Some(message) = scene.message {
@@ -99,7 +118,7 @@ pub fn paint(painter: &Painter, panel: Rect, scene: &GraphScene) {
 }
 
 /// Hairlines at 100, 50 and 0 % with their labels in the left gutter.
-fn paint_grid(painter: &Painter, plot: Rect) {
+fn paint_grid(painter: &Painter, plot: Rect, muted: Color32, fade: f32) {
     let y = |p: f32| plot.top() + (1.0 - p) * plot.height();
     for (p, color) in [(1.0, theme::GRID), (0.5, theme::GRID), (0.0, theme::BASELINE)] {
         painter.hline(plot.x_range(), painter.round_to_pixel_center(y(p)), Stroke::new(1.0, color));
@@ -107,8 +126,8 @@ fn paint_grid(painter: &Painter, plot: Rect) {
     let labels: &[(f32, &str)] =
         if plot.height() >= 56.0 { &[(1.0, "100"), (0.5, "50"), (0.0, "0")] } else { &[(1.0, "100"), (0.0, "0")] };
     for &(p, text) in labels {
-        let pos = pos2(plot.left() - 6.0, y(p) + 0.5);
-        paint_text(painter, pos, Align2::RIGHT_CENTER, text, theme::font(Weight::SemiBold, 10.0), theme::HUD_MUTED);
+        let galley = painter.layout_no_wrap(text.to_owned(), theme::font(Weight::SemiBold, 10.0), muted);
+        paint_galley_halo(painter, pos2(plot.left() - 6.0, y(p) + 0.5), Align2::RIGHT_CENTER, galley, muted, fade);
     }
 }
 
@@ -142,9 +161,25 @@ fn paint_galley(painter: &Painter, pos: Pos2, align: Align2, galley: Arc<Galley>
     painter.galley(rect.min, galley, color);
 }
 
-fn paint_text(painter: &Painter, pos: Pos2, align: Align2, text: impl ToString, font: FontId, color: Color32) {
-    let galley = painter.layout_no_wrap(text.to_string(), font, color);
-    paint_galley(painter, pos, align, galley, color);
+/// As [`paint_galley`], on a dark halo as the panel's background fades by `fade`.
+fn paint_galley_halo(painter: &Painter, pos: Pos2, align: Align2, galley: Arc<Galley>, color: Color32, fade: f32) {
+    let rect = align.anchor_size(pos + MIDDLE_BASELINE, galley.size());
+    overlay::halo_galley(painter, rect.min, galley, color, fade);
+}
+
+/// Dotted vertical lines (1 pt dots every 3 pt) at each of `xs`, from `top` down to
+/// `bottom`, as one mesh.
+fn dotted_vlines(painter: &Painter, xs: impl Iterator<Item = f32>, top: f32, bottom: f32, color: Color32) {
+    let mut mesh = Mesh::default();
+    for x in xs {
+        let x = painter.round_to_pixel_center(x);
+        let mut y = top;
+        while y <= bottom {
+            mesh.add_colored_rect(Rect::from_center_size(pos2(x, y), Vec2::splat(1.0)), color);
+            y += 3.0;
+        }
+    }
+    painter.add(mesh);
 }
 
 /// The data around the car: everything that needs a position.
@@ -180,8 +215,9 @@ impl<'a> View<'a> {
         self.scene.axis == Axis::Time
     }
 
-    /// Start/finish line, the reference fills and the live lines.
-    fn paint_data(&self) {
+    /// Start/finish line, the reference fills, the dotted lines through the peaks and
+    /// the live lines.
+    fn paint_data(&self, ref_peaks: &[PeakMark], live_peaks: &[PeakMark]) {
         if !self.by_time() {
             for v in layout::start_finish_offsets(self.key, &self.scale, self.scene.track_length) {
                 let x = self.painter.round_to_pixel_center(self.scale.x(v));
@@ -198,6 +234,12 @@ impl<'a> View<'a> {
             self.paint_area(&painter, &samples, &rf.lap.throttle, theme::THROTTLE, opacity);
             self.paint_area(&painter, &samples, &rf.lap.brake, theme::BRAKE, opacity);
         }
+        // A dotted line down through each peak, under your lines: gold for the
+        // reference's, light blue for yours.
+        let (top, bottom) = (self.plot.top(), self.scale.y(0.0));
+        for (peaks, color) in [(ref_peaks, theme::TARGET), (live_peaks, theme::YOU)] {
+            dotted_vlines(&painter, peaks.iter().map(|p| p.at.x), top, bottom, theme::alpha(color, 0.55));
+        }
         let (throttle, brake) = self.live_lines(lo);
         paint_live_line(&painter, throttle, theme::THROTTLE);
         paint_live_line(&painter, brake, theme::BRAKE);
@@ -206,7 +248,7 @@ impl<'a> View<'a> {
     /// A reference series as a vertical-gradient area plus an edge line that lifts off
     /// along zero stretches, so the baseline stays clean. Thinned to one physical pixel
     /// per column first, like the live lines: a lap has more samples than the plot has
-    /// pixels.
+    /// pixels. As the panel's background fades, the area gets a dark backing of its own.
     fn paint_area(&self, painter: &Painter, samples: &[(f64, usize)], values: &[f32], color: Color32, opacity: f32) {
         let mut thin = Decimator::new(1.0 / self.painter.pixels_per_point());
         for &(v, i) in samples {
@@ -216,36 +258,45 @@ impl<'a> View<'a> {
         if points.len() < 2 {
             return;
         }
-        let top = theme::alpha(color, 0.36 * opacity);
-        let bottom = theme::alpha(color, 0.02 * opacity);
+        let fade = self.scene.fade.clamp(0.0, 1.0);
+        let shades = [
+            (theme::alpha(theme::SURFACE, 0.55 * fade * opacity), theme::alpha(theme::SURFACE, 0.12 * fade * opacity)),
+            (theme::alpha(color, 0.36 * opacity), theme::alpha(color, 0.02 * opacity)),
+        ];
         let edge = Stroke::new(1.25, theme::alpha(color, 0.6 * opacity));
         let base = self.plot.bottom();
         let value_at = |p: Pos2| ((base - p.y) / self.plot.height()).clamp(0.0, 1.0);
         let lifted = |j: Option<usize>| j.and_then(|j| points.get(j)).is_some_and(|&p| value_at(p) > FLOOR);
 
-        let mut mesh = Mesh::default();
-        mesh.reserve_vertices(2 * points.len());
-        mesh.reserve_triangles(2 * (points.len() - 1));
+        for (k, (top, bottom)) in shades.into_iter().enumerate() {
+            if k == 0 && fade <= 0.0 {
+                continue;
+            }
+            let mut mesh = Mesh::default();
+            mesh.reserve_vertices(2 * points.len());
+            mesh.reserve_triangles(2 * (points.len() - 1));
+            for &p in &points {
+                // Colour by height: the gradient runs from the plot top to the baseline.
+                let n = mesh.vertices.len() as u32;
+                mesh.colored_vertex(p, bottom.lerp_to_gamma(top, value_at(p)));
+                mesh.colored_vertex(pos2(p.x, base), bottom);
+                if n > 0 {
+                    mesh.add_triangle(n - 2, n - 1, n);
+                    mesh.add_triangle(n - 1, n + 1, n);
+                }
+            }
+            painter.add(mesh);
+        }
         let mut edges = Vec::new();
         let mut run = Vec::new();
         for (j, &p) in points.iter().enumerate() {
-            let value = value_at(p);
-            // Colour by height: the gradient runs from the plot top to the baseline.
-            let n = mesh.vertices.len() as u32;
-            mesh.colored_vertex(p, bottom.lerp_to_gamma(top, value));
-            mesh.colored_vertex(pos2(p.x, base), bottom);
-            if n > 0 {
-                mesh.add_triangle(n - 2, n - 1, n);
-                mesh.add_triangle(n - 1, n + 1, n);
-            }
-            if value > FLOOR || lifted(j.checked_sub(1)) || lifted(Some(j + 1)) {
+            if value_at(p) > FLOOR || lifted(j.checked_sub(1)) || lifted(Some(j + 1)) {
                 run.push(p);
             } else {
                 flush_run(&mut run, &mut edges, edge);
             }
         }
         flush_run(&mut run, &mut edges, edge);
-        painter.add(mesh);
         painter.extend(edges);
     }
 
@@ -266,22 +317,19 @@ impl<'a> View<'a> {
         (throttle.finish(), brake.finish())
     }
 
-    /// Cursor, playhead and current-value dots. Returns the dots' boxes.
-    fn paint_cursor(&self) -> [Rect; 2] {
+    /// Cursor, playhead and current-value dots.
+    fn paint_cursor(&self) {
         let (x, top) = (self.scale.x(0.0), self.plot.top());
         self.painter.line_segment([pos2(x, top - 2.0), pos2(x, self.plot.bottom())], Stroke::new(1.5, CURSOR));
         let playhead = vec![pos2(x - 4.0, top - 7.0), pos2(x + 4.0, top - 7.0), pos2(x, top - 2.0)];
         self.painter.add(Shape::convex_polygon(playhead, Color32::WHITE, Stroke::NONE));
-        [(self.now.throttle, theme::THROTTLE), (self.now.brake, theme::BRAKE)].map(|(value, color)| {
-            let at = pos2(x, self.scale.y(value));
-            paint_dot(self.painter, at, color, false);
-            Rect::from_center_size(at, Vec2::splat(12.0))
-        })
+        for (value, color) in [(self.now.throttle, theme::THROTTLE), (self.now.brake, theme::BRAKE)] {
+            paint_dot(self.painter, pos2(x, self.scale.y(value)), color, false);
+        }
     }
 
-    /// The car's lap-distance pill and the axis ticks that fit around it. Returns what
-    /// was placed, for the peak labels to avoid.
-    fn paint_x_band(&self, compact: bool) -> Vec<Rect> {
+    /// The car's lap-distance pill and the axis ticks that fit around it.
+    fn paint_x_band(&self, compact: bool, muted: Color32) {
         let painter = self.painter;
         let mut band = XBand::new(self.plot, self.panel);
         let lap_distance = self.now.lap_pos.rem_euclid(1.0) * self.scene.track_length;
@@ -298,95 +346,182 @@ impl<'a> View<'a> {
             layout::distance_ticks(self.key, &self.scale, self.scene.track_length, compact)
         };
         for tick in ticks {
-            let color = if tick.strong { theme::HUD_TEXT } else { theme::HUD_MUTED };
+            let color = if tick.strong { theme::HUD_TEXT } else { muted };
             let galley = painter.layout_no_wrap(tick.text, theme::font(Weight::SemiBold, 10.0), color);
             let x = self.scale.x(tick.v);
             if band.place_tick(x, galley.size().x).is_some() {
-                paint_galley(painter, pos2(x, band.top + 6.5), Align2::CENTER_CENTER, galley, color);
+                let at = pos2(x, band.top + 6.5);
+                paint_galley_halo(painter, at, Align2::CENTER_CENTER, galley, color, self.scene.fade);
             }
         }
-        band.into_taken()
     }
 
-    /// Brake peaks the labels settings ask for: live events in the history window and
-    /// reference zones on every lap copy in view.
-    fn peaks(&self) -> Vec<Peak> {
-        let LabelOptions { mode, min, .. } = self.scene.labels;
+    fn peak(&self, v: f64, value: f32) -> PeakMark {
+        PeakMark { v, at: pos2(self.scale.x(v), self.scale.y(pedal(value))), value }
+    }
+
+    /// The reference's brake peaks in view, on every lap copy, above the labels' minimum.
+    fn ref_peaks(&self) -> Vec<PeakMark> {
+        let Some(rf) = self.reference.as_ref().filter(|_| self.scene.labels.mode != LabelMode::Live) else {
+            return Vec::new();
+        };
         let (behind, ahead) = (self.scale.behind(), self.scale.ahead());
         let mut peaks = Vec::new();
-        if mode != LabelMode::Reference {
-            for e in self.scene.live.events().filter(|e| e.peak >= min) {
-                let v = if self.by_time() { e.peak_t } else { e.peak_d } - self.key;
-                if (-behind..=0.0).contains(&v) {
-                    peaks.push(Peak { live: true, v, value: e.peak });
+        for z in rf.lap.zones.iter().filter(|z| z.peak >= self.scene.labels.min && z.peak_idx < rf.n) {
+            for base in rf.lap_offsets(-behind, ahead) {
+                let v = base + rf.at(z.peak_idx);
+                if (-behind..=ahead).contains(&v) {
+                    peaks.push(self.peak(v, z.peak));
                 }
             }
         }
-        if let Some(rf) = self.reference.as_ref().filter(|_| mode != LabelMode::Live) {
-            for z in rf.lap.zones.iter().filter(|z| z.peak >= min && z.peak_idx < rf.n) {
-                for base in rf.lap_offsets(-behind, ahead) {
-                    let v = base + rf.at(z.peak_idx);
-                    if (-behind..=ahead).contains(&v) {
-                        peaks.push(Peak { live: false, v, value: z.peak });
-                    }
-                }
-            }
-        }
-        layout::sort_for_placement(&mut peaks);
         peaks
     }
 
-    /// Brake-peak labels, skipped where they'd collide. Connectors and dots go under all
-    /// pills.
-    fn paint_peak_labels(&self, obstacles: Vec<Rect>) {
-        let painter = self.painter;
-        let mut placer = LabelPlacer::new(self.plot, self.panel.top() + 2.0, obstacles);
-        let placed: Vec<(bool, Rect, LabelSpot, Pos2, Arc<Galley>)> = self
-            .peaks()
-            .into_iter()
-            .filter_map(|peak| {
-                let (weight, size, color) = if peak.live {
-                    (Weight::Bold, 11.0, Color32::WHITE)
-                } else {
-                    (Weight::SemiBold, 10.5, theme::HUD_TEXT)
-                };
-                let galley = painter.layout_no_wrap(peak.text(), theme::font(weight, size), color);
-                let at = pos2(self.scale.x(peak.v), self.scale.y(pedal(peak.value)));
-                let (rect, spot) = placer.place(at, galley.size().x.ceil() + 10.0)?;
-                Some((peak.live, rect, spot, at, galley))
+    /// Your brake peaks in the history behind the car, nearest the car first.
+    fn live_peaks(&self) -> Vec<PeakMark> {
+        if self.scene.labels.mode == LabelMode::Reference {
+            return Vec::new();
+        }
+        let behind = self.scale.behind();
+        let mut peaks: Vec<PeakMark> = self
+            .scene
+            .live
+            .events()
+            .filter(|e| e.peak >= self.scene.labels.min)
+            .filter_map(|e| {
+                let v = if self.by_time() { e.peak_t } else { e.peak_d } - self.key;
+                (-behind..=0.0).contains(&v).then(|| self.peak(v, e.peak))
             })
             .collect();
-
-        for &(live, rect, spot, at, _) in &placed {
-            match layout::connector(rect, spot, at, live) {
-                Connector::Pointer(points) => {
-                    painter.add(Shape::convex_polygon(points.to_vec(), theme::BRAKE_PILL, Stroke::NONE));
-                }
-                Connector::Line(from, to) => {
-                    let color = if live { theme::BRAKE_PILL } else { REF_CONNECTOR };
-                    painter.line_segment([from, to], Stroke::new(1.0, color));
-                }
+        peaks.sort_by(|a, b| b.v.total_cmp(&a.v));
+        // Peaks on top of each other (a car stopped with the brake pumping) can't be told
+        // apart: keep the latest.
+        let mut kept: Vec<PeakMark> = Vec::with_capacity(peaks.len());
+        for p in peaks {
+            if kept.iter().all(|k| (k.at.x - p.at.x).abs() >= 1.0) {
+                kept.push(p);
             }
-            paint_dot(painter, at, theme::BRAKE, !live);
         }
-        for (live, rect, _, _, galley) in placed {
-            let pill = rect.shrink(0.5);
-            if live {
-                painter.rect_filled(pill, CornerRadius::same(4), theme::BRAKE_PILL);
-            } else {
-                let stroke = Stroke::new(1.0, theme::alpha(theme::BRAKE, 0.9));
-                painter.rect(
-                    pill,
-                    CornerRadius::same(4),
-                    theme::alpha(theme::SURFACE, 0.9),
-                    stroke,
-                    StrokeKind::Middle,
-                );
-            }
-            let color = if live { Color32::WHITE } else { theme::HUD_TEXT };
-            paint_galley(painter, rect.center() + vec2(0.0, 0.5), Align2::CENTER_CENTER, galley, color);
+        kept
+    }
+
+    /// Gold rings on the reference's peaks, then each peak's label on the rail above the
+    /// plot, at the top of its dotted line. Returns the labels' boxes.
+    fn paint_rail(&self, peaks: &[PeakMark]) -> Vec<Rect> {
+        let painter = self.painter;
+        for p in peaks {
+            paint_dot(painter, p.at, theme::TARGET, true);
+        }
+        let font = theme::font(Weight::SemiBold, 10.0);
+        let galleys: Vec<Arc<Galley>> =
+            peaks.iter().map(|p| painter.layout_no_wrap(p.text(), font.clone(), theme::TARGET)).collect();
+        let spots: Vec<(f32, f32)> =
+            peaks.iter().zip(&galleys).map(|(p, g)| (p.at.x, g.size().x.ceil() + 8.0)).collect();
+        let mut labels = Vec::new();
+        for (spot, galley) in place_rail(self.plot, self.scale.x(0.0), &spots).into_iter().zip(galleys) {
+            let Some(rect) = spot else { continue };
+            let stroke = Stroke::new(1.0, theme::alpha(theme::TARGET, 0.8));
+            painter.rect(
+                rect.shrink(0.5),
+                CornerRadius::same(3),
+                theme::alpha(theme::SURFACE, 0.72),
+                stroke,
+                StrokeKind::Middle,
+            );
+            paint_galley(painter, rect.center() + vec2(0.0, 0.5), Align2::CENTER_CENTER, galley, theme::TARGET);
+            labels.push(rect);
+        }
+        labels
+    }
+
+    /// Your peaks' numbers, light blue on a dark outline, pinned to the apex of your
+    /// brake line and clear of `taken` (the header, the rail labels, each other).
+    fn paint_pins(&self, peaks: &[PeakMark], mut taken: Vec<Rect>) {
+        let painter = self.painter;
+        let top = self.panel.top() + 2.0;
+        let font = theme::font(Weight::Bold, 10.5);
+        let pins: Vec<(Pin, Pos2, Arc<Galley>)> = peaks
+            .iter()
+            .map(|p| {
+                let galley = painter.layout_no_wrap(p.text(), font.clone(), theme::YOU);
+                let pin = Pin::place(p.at, galley.size().x.ceil() + 4.0, self.plot, top, &taken);
+                taken.push(pin.rect);
+                (pin, p.at, galley)
+            })
+            .collect();
+        for (pin, apex, galley) in pins {
+            let pointer = pin.pointer(apex).to_vec();
+            painter.add(Shape::closed_line(pointer.clone(), Stroke::new(2.0, PIN_OUTLINE)));
+            painter.add(Shape::convex_polygon(pointer, theme::YOU, Stroke::NONE));
+            let at = pin.rect.center() + vec2(0.0, 0.5) + MIDDLE_BASELINE;
+            paint_outlined(painter, Align2::CENTER_CENTER.anchor_size(at, galley.size()).min, galley, theme::YOU);
         }
     }
+
+    /// A mark on the baseline at each reference brake point the countdown uses, and just
+    /// under it your gap to it in the grade's colour: from the reference brake-on to yours.
+    fn paint_brake_points(&self, points: BrakePoints) {
+        let Some(rf) = &self.reference else { return };
+        let (behind, ahead) = (self.scale.behind(), self.scale.ahead());
+        let columns = Rect::from_x_y_ranges(self.plot.x_range(), self.panel.y_range());
+        let painter = self.painter.with_clip_rect(columns.intersect(self.painter.clip_rect()));
+        let zones = &rf.lap.zones;
+        let brake_on = |k: usize| rf.at(zones[k].start.min(rf.n - 1));
+        let base = painter.round_to_pixel_center(self.scale.y(0.0));
+        for lap in rf.lap_offsets(-behind, ahead) {
+            for &k in points.zones.iter().filter(|&&k| k < zones.len()) {
+                let v = lap + brake_on(k);
+                if (-behind..=ahead).contains(&v) {
+                    let x = painter.round_to_pixel_center(self.scale.x(v));
+                    let mark = vec![pos2(x - 3.5, base - 0.5), pos2(x, base - 6.5), pos2(x + 3.5, base - 0.5)];
+                    painter.add(Shape::convex_polygon(mark, theme::BRAKE, Stroke::NONE));
+                }
+            }
+        }
+        let y = base + 2.0;
+        for mark in points.marks.iter().filter(|m| m.zone < zones.len()) {
+            let v0 = mark.lap as f64 * rf.period + brake_on(mark.zone) - rf.center;
+            let v1 = if self.by_time() { mark.on_t - self.now.t } else { mark.on_d - self.key };
+            if v0.max(v1) < -behind || v0.min(v1) > ahead {
+                continue;
+            }
+            let (x0, x1) = (self.scale.x(v0), self.scale.x(v1));
+            let color = theme::grade_color(mark.grade);
+            painter.line_segment([pos2(x0, y), pos2(x1, y)], Stroke::new(2.5, color));
+            painter.line_segment([pos2(x1, y - 4.0), pos2(x1, y + 2.0)], Stroke::new(1.5, color));
+        }
+    }
+}
+
+/// A brake peak in view.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PeakMark {
+    /// Offset from the car.
+    v: f64,
+    /// The peak on the plot.
+    at: Pos2,
+    /// Pedal, 0..1.
+    value: f32,
+}
+
+impl PeakMark {
+    /// `68%`.
+    fn text(&self) -> String {
+        format!("{}%", (self.value * 100.0).round() as i32)
+    }
+}
+
+/// Text on a solid dark outline (about 1.75 pt), so it reads over the traces and fills.
+fn paint_outlined(painter: &Painter, pos: Pos2, galley: Arc<Galley>, color: Color32) {
+    for r in [1.0, 1.75] {
+        for (dx, dy) in
+            [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0), (0.7, 0.7), (-0.7, 0.7), (0.7, -0.7), (-0.7, -0.7)]
+        {
+            painter.galley_with_override_text_color(pos + r * vec2(dx, dy), Arc::clone(&galley), PIN_OUTLINE);
+        }
+    }
+    painter.galley(pos, galley, color);
 }
 
 /// Where the reference lap sits on the x axis: one copy per lap, placed relative to the car.
@@ -512,6 +647,8 @@ mod tests {
             header_height: 26.0,
             obstacles: &[],
             message: None,
+            brake_points: None,
+            fade: 0.0,
         }
     }
 
@@ -566,20 +703,117 @@ mod tests {
         let painter =
             Painter::new(eframe::egui::Context::default(), eframe::egui::LayerId::background(), Rect::EVERYTHING);
         let panel = Rect::from_min_size(Pos2::ZERO, vec2(680.0, 170.0));
-        let plot = PlotLayout::new(panel, 26.0).unwrap().plot;
-        let peaks = View::new(&painter, panel, plot, &s).unwrap().peaks();
-        // Live first (the active 8% event is under the 10% minimum), then reference zones
-        // nearest first: 77% and 67% on this lap, 68% and 46% on the next.
-        assert!(peaks[0].live && peaks[0].value == 0.7 && (peaks[0].v + 80.0).abs() < 1e-6);
-        let refs: Vec<u32> = peaks[1..].iter().map(|p| (p.value * 100.0).round() as u32).collect();
-        assert_eq!(refs, [77, 67, 68, 46]);
-        assert!(peaks[1..].iter().all(|p| !p.live));
-        assert!((peaks[3].v - (2.0 * L + lap.pct[lap.zones[0].peak_idx] * L - now.lap_pos * L)).abs() < 1e-6);
+        let plot = PlotLayout::new(panel, 26.0, true).unwrap().plot;
+        let view = View::new(&painter, panel, plot, &s).unwrap();
+        // Yours behind the car (the active 8% event is under the 10% minimum).
+        let yours = view.live_peaks();
+        assert_eq!(yours.len(), 1);
+        assert!(yours[0].value == 0.7 && (yours[0].v + 80.0).abs() < 1e-6);
+        assert_eq!(yours[0].at, pos2(view.scale.x(yours[0].v), view.scale.y(0.7)));
+        // The reference's, nearest first: 77% and 67% on this lap, 68% and 46% on the next.
+        let mut refs = view.ref_peaks();
+        refs.sort_by(|a, b| a.v.abs().total_cmp(&b.v.abs()));
+        let values: Vec<u32> = refs.iter().map(|p| (p.value * 100.0).round() as u32).collect();
+        assert_eq!(values, [77, 67, 68, 46]);
+        assert!((refs[2].v - (2.0 * L + lap.pct[lap.zones[0].peak_idx] * L - now.lap_pos * L)).abs() < 1e-6);
+        assert_eq!(refs[0].text(), "77%");
 
         s.labels.mode = LabelMode::Live;
-        assert!(View::new(&painter, panel, plot, &s).unwrap().peaks().iter().all(|p| p.live));
+        assert!(View::new(&painter, panel, plot, &s).unwrap().ref_peaks().is_empty());
         s.labels.mode = LabelMode::Reference;
-        assert!(View::new(&painter, panel, plot, &s).unwrap().peaks().iter().all(|p| !p.live));
+        assert!(View::new(&painter, panel, plot, &s).unwrap().live_peaks().is_empty());
+    }
+
+    /// Everything `paint` draws for `scene` on a `size` panel.
+    fn painted(scene: &GraphScene, size: Vec2) -> Vec<Shape> {
+        let ctx = eframe::egui::Context::default();
+        theme::install_fonts(&ctx);
+        let panel = Rect::from_min_size(Pos2::ZERO, size);
+        let mut shapes = Vec::new();
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(Default::default(), |ui| paint(ui.painter(), panel, scene));
+            out.textures_delta.clear();
+            shapes = out.shapes.into_iter().map(|c| c.shape).collect();
+        }
+        shapes
+    }
+
+    fn texts(shapes: &[Shape]) -> Vec<String> {
+        let mut out = Vec::new();
+        for shape in shapes {
+            match shape {
+                Shape::Text(t) => out.push(t.galley.text().to_owned()),
+                Shape::Vec(v) => out.extend(texts(v)),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn reference_peaks_are_labelled_on_the_rail_and_yours_at_the_apex() {
+        let lap = sample_lap();
+        let mut live = LiveTrace::new();
+        for (i, b) in [0.0, 0.3, 0.7, 0.2, 0.0].into_iter().enumerate() {
+            live.push(LiveSample { t: i as f64, d: L * 0.6 + i as f64 * 20.0, brake: b, throttle: 0.0 });
+        }
+        let s = scene(Axis::Distance, &live, Some(&lap), car(0.6 + 120.0 / L));
+        let labels = texts(&painted(&s, vec2(680.0, 170.0)));
+        assert!(labels.iter().any(|t| t == "70%"), "your peak: {labels:?}");
+        let rail: Vec<&String> = labels.iter().filter(|t| t.ends_with('%') && *t != "70%").collect();
+        assert!(!rail.is_empty(), "reference peaks: {labels:?}");
+
+        let off = GraphScene {
+            labels: LabelOptions { show: false, ..s.labels },
+            ..scene(Axis::Distance, &live, Some(&lap), car(0.6 + 120.0 / L))
+        };
+        assert!(texts(&painted(&off, vec2(680.0, 170.0))).iter().all(|t| !t.ends_with('%')), "labels off");
+    }
+
+    #[test]
+    fn brake_points_are_marked_on_the_baseline() {
+        let lap = sample_lap();
+        let live = LiveTrace::new();
+        let zones: Vec<usize> = (0..lap.zones.len()).collect();
+        let now = car(lap.pct[lap.zones[0].start] + 100.0 / L);
+        let mut s = scene(Axis::Distance, &live, Some(&lap), now);
+        s.labels.show = false;
+        let marks = [Mark {
+            lap: 0,
+            zone: 0,
+            grade: crate::cue::Grade::Late,
+            on_t: 0.0,
+            on_d: lap.pct[lap.zones[0].start] * L + 12.0,
+        }];
+        s.brake_points = Some(BrakePoints { zones: &zones, marks: &marks });
+        let shapes = painted(&s, vec2(680.0, 170.0));
+        let is_mark = |shape: &Shape| matches!(shape, Shape::Path(p) if p.fill == theme::BRAKE && p.points.len() == 3);
+        let panel = Rect::from_min_size(Pos2::ZERO, vec2(680.0, 170.0));
+        let plot = PlotLayout::new(panel, 26.0, false).unwrap().plot;
+        let scale = Scale::new(plot, 500.0, 500.0).unwrap();
+        // Zone 0's brake point is 100 m behind the car.
+        let x = scale.x(-100.0);
+        let tips: Vec<f32> = shapes
+            .iter()
+            .filter(|shape| is_mark(shape))
+            .map(|shape| match shape {
+                Shape::Path(p) => p.points[1].x,
+                _ => unreachable!(),
+            })
+            .collect();
+        assert!(tips.iter().any(|t| (t - x).abs() <= 1.0), "{x} in {tips:?}");
+        // Your late brake-on, 12 m after it: an orange bar under the baseline.
+        let late = theme::grade_color(crate::cue::Grade::Late);
+        let bar = shapes.iter().any(|shape| match shape {
+            Shape::LineSegment { points, stroke } => {
+                stroke.color == late && (points[0].x - x).abs() < 1.5 && (points[1].x - scale.x(-88.0)).abs() < 1.5
+            }
+            _ => false,
+        });
+        assert!(bar, "grade bar from the reference brake-on to yours");
+
+        s.brake_points = None;
+        assert!(!painted(&s, vec2(680.0, 170.0)).iter().any(is_mark), "off");
     }
 
     #[test]
@@ -588,7 +822,7 @@ mod tests {
         let painter =
             Painter::new(eframe::egui::Context::default(), eframe::egui::LayerId::background(), Rect::EVERYTHING);
         let panel = Rect::from_min_size(Pos2::ZERO, vec2(680.0, 170.0));
-        let plot = PlotLayout::new(panel, 26.0).unwrap().plot;
+        let plot = PlotLayout::new(panel, 26.0, false).unwrap().plot;
         let mut s = scene(Axis::Distance, &live, None, car(f64::NAN));
         assert!(View::new(&painter, panel, plot, &s).is_none());
         s.now = Some(car(0.5));
@@ -629,7 +863,7 @@ mod tests {
         let painter =
             Painter::new(eframe::egui::Context::default(), eframe::egui::LayerId::background(), Rect::EVERYTHING);
         let panel = Rect::from_min_size(Pos2::ZERO, vec2(680.0, 170.0));
-        let plot = PlotLayout::new(panel, 26.0).unwrap().plot;
+        let plot = PlotLayout::new(panel, 26.0, false).unwrap().plot;
         for axis in [Axis::Distance, Axis::Time] {
             let s = scene(axis, &live, None, now);
             let view = View::new(&painter, panel, plot, &s).unwrap();
@@ -693,7 +927,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        let plot = PlotLayout::new(panel, s.header_height).unwrap().plot;
+        let plot = PlotLayout::new(panel, s.header_height, false).unwrap().plot;
         (plot, Scale::new(plot, s.behind, s.ahead).unwrap().x(0.0), rects)
     }
 

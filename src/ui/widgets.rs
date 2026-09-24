@@ -19,6 +19,7 @@ use eframe::egui::{
 };
 
 use super::theme::{self, Weight};
+use crate::cue::Grade;
 
 /// Line box of 13 px body text.
 pub const LINE: f32 = 18.0;
@@ -220,6 +221,42 @@ pub fn paint_icon(painter: &Painter, rect: Rect, icon: Icon, color: Color32, str
     }
 }
 
+// ---- Grade chip ----
+
+/// A timing grade's chip (`.cue-chip`): its text in capitals on the grade's colour,
+/// `size` points, its left edge at `left_center`. Returns its rect.
+pub fn grade_chip(painter: &Painter, left_center: Pos2, grade: Grade, size: f32) -> Rect {
+    grade_chip_styled(painter, left_center, grade, size, false)
+}
+
+/// As [`grade_chip`]; `pending` draws it outlined with coloured text (a grade still
+/// counting up).
+pub fn grade_chip_styled(painter: &Painter, left_center: Pos2, grade: Grade, size: f32, pending: bool) -> Rect {
+    let color = theme::grade_color(grade);
+    let ink = if pending { color } else { theme::grade_ink(grade) };
+    let mut job = LayoutJob::default();
+    job.append(
+        grade.chip(),
+        0.0,
+        TextFormat {
+            font_id: theme::font(Weight::Bold, size),
+            color: ink,
+            extra_letter_spacing: 0.06 * size,
+            ..Default::default()
+        },
+    );
+    let galley = painter.layout_job(job);
+    let pad = vec2(0.6 * size, 0.3 * size);
+    let rect = Rect::from_min_size(left_center - vec2(0.0, galley.size().y / 2.0 + pad.y), galley.size() + 2.0 * pad);
+    if pending {
+        painter.rect(rect, 4.0, theme::alpha(color, 0.14), Stroke::new(1.0, color), StrokeKind::Inside);
+    } else {
+        painter.rect_filled(rect, 4.0, color);
+    }
+    painter.galley(rect.min + pad, galley, ink);
+    rect
+}
+
 // ---- Slider ----
 
 /// `value` moved to the nearest multiple of `step` from the start of `range`, inside it.
@@ -251,12 +288,26 @@ pub struct Slider<'a> {
     range: RangeInclusive<f32>,
     step: f32,
     unit: &'a str,
+    prefix: &'a str,
+    decimals: Option<usize>,
     off_at_zero: bool,
 }
 
 impl<'a> Slider<'a> {
     pub fn new(label: &'a str, value: &'a mut f32, range: RangeInclusive<f32>) -> Self {
-        Self { label, detail: None, value, range, step: 1.0, unit: "", off_at_zero: false }
+        Self { label, detail: None, value, range, step: 1.0, unit: "", prefix: "", decimals: None, off_at_zero: false }
+    }
+
+    /// Put before the readout, e.g. `"±"`.
+    pub fn prefix(mut self, prefix: &'a str) -> Self {
+        self.prefix = prefix;
+        self
+    }
+
+    /// Always this many decimals in the readout (default: none for whole numbers, else one).
+    pub fn decimals(mut self, decimals: usize) -> Self {
+        self.decimals = Some(decimals);
+        self
     }
 
     /// Values snap to multiples of `step` from the start of the range (default 1).
@@ -329,7 +380,11 @@ impl Widget for Slider<'_> {
             response.mark_changed();
         }
         let value = *self.value;
-        let text = format_value(value, self.unit, self.off_at_zero);
+        let text = match self.decimals {
+            _ if self.off_at_zero && value == 0.0 => "Off".to_owned(),
+            Some(d) => format!("{}{value:.d$}{}", self.prefix, self.unit),
+            None => format!("{}{}", self.prefix, format_value(value, self.unit, self.off_at_zero)),
+        };
         response.widget_info(|| WidgetInfo::slider(ui.is_enabled(), f64::from(value), self.label));
 
         paint_row_head(

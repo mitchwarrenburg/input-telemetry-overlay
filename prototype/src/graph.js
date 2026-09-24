@@ -4,15 +4,21 @@
 (function (root) {
   const ITO = (root.ITO = root.ITO || {});
 
-  const RGB = { throttle: "34, 224, 122", brake: "255, 61, 46" };
+  const RGB = { throttle: "34, 224, 122", brake: "255, 61, 46", you: "127, 209, 255", target: "245, 200, 80" };
   const INK = {
     surface: "7, 9, 10",
     text: "#e8efee",
     muted: "#7f8b89",
     grid: "rgba(255, 255, 255, 0.07)",
     baseline: "rgba(255, 255, 255, 0.16)",
-    brakePill: "#e0301f", // a step darker than the line so white text clears 4.5:1
   };
+  // Reference peak labels sit in their own row between the header and the plot, so they
+  // never cover a trace at 100%. The plot moves down by RAIL_ROOM to make space for it.
+  const RAIL_H = 13;
+  const RAIL_GAP = 2; // row to the plot's top edge
+  const RAIL_ROOM = 6;
+  const PIN_H = 12; // your peak's number
+  const PIN_TIP = 4; // its pointer
   const FONT = '"Barlow Semi Condensed", "Segoe UI", system-ui, sans-serif';
   const DIST_STEPS = [25, 50, 100, 200, 250, 500, 1000, 2000];
   const TIME_STEPS = [0.5, 1, 2, 5, 10];
@@ -81,7 +87,9 @@
     }
 
     // sc: { axis, behind, ahead, L, now, live, ref, showRef, refOpacity,
-    //       labels: { show, mode, min }, headerH, obstacles: [{x,y,w,h}] }
+    //       labels: { show, mode, min }, headerH, obstacles: [{x,y,w,h}],
+    //       cue: brake point state from BrakeCue.update(), or null,
+    //       bgAlpha: the window's background opacity, 0–1 (default 1) }
     render(sc) {
       const { ctx, w, h } = this;
       ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
@@ -90,7 +98,10 @@
 
       const compact = w < 400;
       const showX = h >= 118;
-      const plot = { x: compact ? 26 : 32, y: sc.headerH + 8 };
+      const ref = sc.ref && sc.showRef ? sc.ref : null;
+      const labels = sc.labels;
+      const railOn = labels.show && ref && labels.mode !== "live";
+      const plot = { x: compact ? 26 : 32, y: sc.headerH + 8 + (railOn ? RAIL_ROOM : 0) };
       plot.w = w - plot.x - 10;
       plot.h = h - plot.y - (showX ? 20 : 8);
       if (plot.w < 40 || plot.h < 16) return;
@@ -100,8 +111,13 @@
       const X = (v) => plot.x + ((v + sc.behind) / span) * plot.w;
       const Y = (p) => plot.y + (1 - p) * plot.h;
       const cx = X(0);
-      const ref = sc.ref && sc.showRef ? sc.ref : null;
       const fr = ref ? refFrame(sc, ref) : null;
+      // How far the window's background has faded: the fills and text get a dark backing
+      // of their own in proportion, so they don't wash out over a bright sim.
+      this.fade = 1 - (sc.bgAlpha == null ? 1 : sc.bgAlpha);
+      // Muted text lightens toward the text colour as the background fades.
+      const k = 0.55 * this.fade, mix = (a, b) => Math.round(a + (b - a) * k);
+      this.muted = `rgb(${mix(127, 232)}, ${mix(139, 239)}, ${mix(137, 238)})`;
       const margin = span * 0.02;
 
       // Grid: 0 / 50 / 100, solid hairlines.
@@ -135,11 +151,22 @@
         this.fillArea(pts.v, pts.b, RGB.brake, sc.refOpacity, X, Y, plot);
       }
 
+      // Reference peaks: a dotted line through each, under your lines.
+      const refPeaks = railOn ? this.refPeaks(sc, ref, fr, X, Y, plot) : [];
+      this.drawPeakLines(refPeaks, Y, plot, `rgba(${RGB.target}, 0.55)`);
+
+      // Your peaks: a dotted line through each too, in your colour.
+      const livePeaks = labels.show && labels.mode !== "ref" ? this.livePeaks(sc, X, Y) : [];
+      this.drawPeakLines(livePeaks, Y, plot, `rgba(${RGB.you}, 0.55)`);
+
       // Live inputs: solid lines up to the car.
       const live = livePoints(sc.live, sc, -sc.behind - margin);
       this.strokeLine(live.v, live.t, RGB.throttle, X, Y);
       this.strokeLine(live.v, live.b, RGB.brake, X, Y);
       ctx.restore();
+
+      // Brake points: a mark at each reference brake-on, your gap to it underlined.
+      if (ref && sc.cue) this.drawBrakePoints(sc, ref, fr, X, Y, plot);
 
       // Car position: cursor, playhead and current-value dots.
       ctx.strokeStyle = "rgba(255, 255, 255, 0.92)";
@@ -147,19 +174,20 @@
       ctx.beginPath(); ctx.moveTo(cx, plot.y - 2); ctx.lineTo(cx, plot.y + plot.h); ctx.stroke();
       ctx.fillStyle = "#fff";
       ctx.beginPath(); ctx.moveTo(cx - 4, plot.y - 7); ctx.lineTo(cx + 4, plot.y - 7); ctx.lineTo(cx, plot.y - 2); ctx.closePath(); ctx.fill();
-      const dots = [];
-      for (const [val, rgb] of [[sc.now.throttle, RGB.throttle], [sc.now.brake, RGB.brake]]) {
-        const y = Y(val);
-        this.dot(cx, y, rgb);
-        dots.push({ x: cx - 6, y: y - 6, w: 12, h: 12 });
-      }
+      for (const [val, rgb] of [[sc.now.throttle, RGB.throttle], [sc.now.brake, RGB.brake]]) this.dot(cx, Y(val), rgb);
+
+      // Reference peak labels in their row, over the cursor as one passes it.
+      const rail = this.drawRail(refPeaks);
+
+      // Your peaks: pinned to the apex of your brake line, on top of everything else.
+      this.drawPins(livePeaks, plot, [...sc.obstacles, ...rail]);
 
       // Y labels.
       ctx.font = `600 10px ${FONT}`;
-      ctx.fillStyle = INK.muted;
+      ctx.fillStyle = this.muted;
       ctx.textAlign = "right";
       ctx.textBaseline = "middle";
-      for (const p of plot.h >= 56 ? [1, 0.5, 0] : [1, 0]) ctx.fillText(String(p * 100), plot.x - 6, Y(p) + 0.5);
+      for (const p of plot.h >= 56 ? [1, 0.5, 0] : [1, 0]) this.text(String(p * 100), plot.x - 6, Y(p) + 0.5);
 
       // X band: car-position pill, then ticks that don't collide with it.
       const placedX = [];
@@ -203,13 +231,11 @@
           const box = { x: x - tw / 2 - 2, y: bandY, w: tw + 4, h: 12 };
           if (box.x < plot.x - 6 || box.x + box.w > w - 2 || placedX.some((p) => overlaps(p, box, 3))) continue;
           placedX.push(box);
-          ctx.fillStyle = t.strong ? INK.text : INK.muted;
-          ctx.fillText(t.text, x, bandY + 6.5);
+          ctx.fillStyle = t.strong ? INK.text : this.muted;
+          this.text(t.text, x, bandY + 6.5);
         }
       }
 
-      // Brake peak labels.
-      if (sc.labels.show) this.drawPeakLabels(sc, ref, fr, X, Y, plot, [...sc.obstacles, ...placedX, ...dots]);
 
       // Empty state.
       if (!sc.ref) {
@@ -225,6 +251,55 @@
           ctx.fillText("Drop a Garage 61 CSV here, or ⚙ → Reference", mid, plot.y + plot.h / 2 + 8);
         }
       }
+    }
+
+    drawBrakePoints(sc, ref, fr, X, Y, plot) {
+      const { ctx } = this;
+      const lo = -sc.behind, hi = sc.ahead;
+      const refX = (m, k) => m * fr.period + fr.at(ref.zones[k].start) - fr.center;
+      const base = Math.round(Y(0)) + 0.5;
+
+      const xs = [];
+      for (let m = Math.floor((fr.center + lo) / fr.period); m <= Math.floor((fr.center + hi) / fr.period); m++) {
+        for (const k of sc.cue.cueZones) {
+          const v = refX(m, k);
+          if (v >= lo && v <= hi) xs.push(Math.round(X(v)) + 0.5);
+        }
+      }
+      // A small mark on the baseline at each (the top of the plot is the peak labels' rail).
+      ctx.fillStyle = `rgb(${RGB.brake})`;
+      for (const x of xs) {
+        ctx.beginPath(); ctx.moveTo(x - 3.5, base - 0.5); ctx.lineTo(x + 3.5, base - 0.5); ctx.lineTo(x, base - 6.5); ctx.closePath(); ctx.fill();
+      }
+
+      // Under the baseline, from the reference brake-on to yours, in the grade's colour.
+      const y = base + 2;
+      for (const mk of sc.cue.marks) {
+        const v0 = refX(mk.m, mk.k);
+        const v1 = sc.axis === "distance" ? mk.onD - sc.now.D : mk.onT - sc.now.t;
+        if (Math.max(v0, v1) < lo || Math.min(v0, v1) > hi) continue;
+        const x0 = X(v0), x1 = X(v1);
+        ctx.strokeStyle = `rgb(${ITO.GRADES[mk.grade].rgb})`;
+        ctx.lineCap = "butt";
+        ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(x1, y - 4); ctx.lineTo(x1, y + 2); ctx.stroke();
+      }
+    }
+
+    // fillText with a dark halo as the background fades (the current fillStyle and font).
+    text(s, x, y) {
+      const { ctx } = this;
+      if (this.fade > 0) {
+        const fill = ctx.fillStyle;
+        ctx.lineJoin = "round";
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = `rgba(${INK.surface}, ${0.9 * this.fade})`;
+        ctx.strokeText(s, x, y);
+        ctx.fillStyle = fill;
+      }
+      ctx.fillText(s, x, y);
     }
 
     fillArea(v, val, rgb, op, X, Y, plot) {
@@ -244,6 +319,13 @@
       }
       area.lineTo(X(v[v.length - 1]), base);
       area.closePath();
+      if (this.fade > 0) {
+        const d = this.ctx.createLinearGradient(0, plot.y, 0, base);
+        d.addColorStop(0, `rgba(${INK.surface}, ${0.55 * this.fade * op})`);
+        d.addColorStop(1, `rgba(${INK.surface}, ${0.12 * this.fade * op})`);
+        ctx.fillStyle = d;
+        ctx.fill(area);
+      }
       const g = this.ctx.createLinearGradient(0, plot.y, 0, base);
       g.addColorStop(0, `rgba(${rgb}, ${0.36 * op})`);
       g.addColorStop(1, `rgba(${rgb}, ${0.02 * op})`);
@@ -265,13 +347,9 @@
       ctx.strokeStyle = `rgba(${INK.surface}, 0.55)`; // keeps the line legible over its own fill
       ctx.lineWidth = 4;
       ctx.stroke(p);
-      ctx.save();
-      ctx.shadowColor = `rgba(${rgb}, 0.55)`;
-      ctx.shadowBlur = 6;
       ctx.strokeStyle = `rgb(${rgb})`;
       ctx.lineWidth = 2;
       ctx.stroke(p);
-      ctx.restore();
     }
 
     dot(x, y, rgb, hollow) {
@@ -283,94 +361,130 @@
       else { ctx.fillStyle = `rgb(${rgb})`; ctx.fill(); }
     }
 
-    drawPeakLabels(sc, ref, fr, X, Y, plot, obstacles) {
+    // Reference peaks in view, with their label box on the rail. Labels keep their spot:
+    // one that would overlap a label nearer the car (the next zone ahead first) nudges
+    // aside a few px, and if that isn't enough it's left off; its line still shows.
+    refPeaks(sc, ref, fr, X, Y, plot) {
       const { ctx } = this;
-      const { mode, min } = sc.labels;
-      const isDist = sc.axis === "distance";
-      const items = [];
-
-      if (mode !== "ref") {
-        for (const e of sc.live.events) {
-          const v = isDist ? e.peakD - sc.now.D : e.peakT - sc.now.t;
-          if (e.peak >= min && v >= -sc.behind && v <= 0) items.push({ kind: "live", v, peak: e.peak });
+      const lo = -sc.behind, hi = sc.ahead, cx = X(0);
+      const out = [];
+      ref.zones.forEach((z) => {
+        if (z.peak < sc.labels.min) return;
+        for (let m = Math.floor((fr.center + lo) / fr.period); m <= Math.floor((fr.center + hi) / fr.period); m++) {
+          const v = m * fr.period + fr.at(z.peakIdx) - fr.center;
+          if (v >= lo && v <= hi) out.push({ x: X(v), y: Y(z.peak), peak: z.peak });
+        }
+      });
+      ctx.font = `600 10px ${FONT}`;
+      const top = plot.y - RAIL_GAP - RAIL_H;
+      const placed = [];
+      const near = (p) => (p.x >= cx ? (p.x - cx) * 0.5 : cx - p.x); // ahead counts double
+      for (const p of [...out].sort((a, b) => near(a) - near(b))) {
+        p.text = `${Math.round(p.peak * 100)}%`;
+        const w = Math.ceil(ctx.measureText(p.text).width) + 8;
+        for (const dx of [0, -4, 4, -8, 8]) {
+          const box = { x: clamp(p.x - w / 2 + dx, plot.x, plot.x + plot.w - w), y: top, w, h: RAIL_H };
+          if (placed.some((q) => overlaps(q, box, 3))) continue;
+          placed.push(box);
+          p.box = box;
+          break;
         }
       }
-      if (ref && mode !== "live") {
-        for (const z of ref.zones) {
-          if (z.peak < min) continue;
-          for (let k = Math.floor((fr.center - sc.behind) / fr.period); k <= Math.floor((fr.center + sc.ahead) / fr.period); k++) {
-            const v = k * fr.period + fr.at(z.peakIdx) - fr.center;
-            if (v >= -sc.behind && v <= sc.ahead) items.push({ kind: "ref", v, peak: z.peak });
-          }
-        }
-      }
-      // Live labels win collisions; within a kind, the one nearest the car does.
-      items.sort((a, b) => (a.kind === b.kind ? Math.abs(a.v) - Math.abs(b.v) : a.kind === "live" ? -1 : 1));
+      return out;
+    }
 
-      // Place every label first, then draw connectors under all pills.
-      const placed = obstacles.slice();
-      const shown = [];
-      const bh = 16;
-      for (const it of items) {
-        const live = it.kind === "live";
-        const text = `${Math.round(it.peak * 100)}%`;
-        const font = live ? `700 11px ${FONT}` : `600 10.5px ${FONT}`;
-        ctx.font = font;
-        const bw = Math.ceil(ctx.measureText(text).width) + 10;
-        const px = X(it.v), py = Y(it.peak);
-        const xMin = plot.x, xMax = plot.x + plot.w - bw;
-        const cands = [
-          { x: clamp(px - bw / 2, xMin, xMax), y: py - 7 - bh, at: "above" },
-          { x: clamp(px - bw / 2, xMin, xMax), y: py - 10 - 2 * bh, at: "stack" },
-          { x: px + 8, y: py - bh / 2, at: "side" },
-          { x: px - 8 - bw, y: py - bh / 2, at: "side" },
-          { x: clamp(px - bw / 2, xMin, xMax), y: py + 7, at: "below" },
-        ];
-        const peakBox = { x: px - 5, y: py - 5, w: 10, h: 10 };
-        const box = cands.find((c) => {
-          const b = { x: c.x, y: c.y, w: bw, h: bh };
-          return c.x >= xMin - 0.5 && c.x <= xMax + 0.5 && c.y >= 2 && c.y + bh <= plot.y + plot.h - 1 &&
-            !placed.some((p) => overlaps(p, b)) && !overlaps(peakBox, b, 0);
-        });
-        if (!box) continue;
-        placed.push({ x: box.x, y: box.y, w: bw, h: bh }, peakBox);
-        shown.push({ live, text, font, bw, px, py, box, color: live ? INK.brakePill : `rgba(${RGB.brake}, 0.9)` });
+    // Dotted line from the rail down through each reference peak to the 0% line.
+    drawPeakLines(peaks, Y, plot, color) {
+      if (!peaks.length) return;
+      const { ctx } = this;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      ctx.lineCap = "round";
+      ctx.setLineDash([0.01, 3]);
+      for (const p of peaks) {
+        const x = Math.round(p.x) + 0.5;
+        ctx.beginPath(); ctx.moveTo(x, plot.y); ctx.lineTo(x, Y(0)); ctx.stroke();
       }
+      ctx.restore();
+    }
 
-      for (const { live, bw, px, py, box, color } of shown) {
-        const ax = clamp(px, box.x + 4, box.x + bw - 4);
-        if (live && box.at === "above" && ax === px) {
-          ctx.fillStyle = color;
-          ctx.beginPath(); ctx.moveTo(px - 4, box.y + bh - 0.5); ctx.lineTo(px + 4, box.y + bh - 0.5); ctx.lineTo(px, box.y + bh + 4); ctx.closePath(); ctx.fill();
-        } else {
-          const side = box.at === "side";
-          const sx = side ? (px < box.x ? box.x : box.x + bw) : ax;
-          const sy = side ? box.y + bh / 2 : box.y + bh <= py ? box.y + bh : box.y;
-          ctx.strokeStyle = live ? color : "rgba(255, 255, 255, 0.4)";
-          ctx.lineWidth = 1;
-          ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(px, py); ctx.stroke();
-        }
-        this.dot(px, py, RGB.brake, !live);
-      }
-
+    // The peak dots, then each label at the top of its line. Returns the label boxes.
+    drawRail(peaks) {
+      const { ctx } = this;
+      for (const p of peaks) this.dot(p.x, p.y, RGB.target, true);
+      ctx.font = `600 10px ${FONT}`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      for (const { live, text, font, bw, box, color } of shown) {
+      const boxes = [];
+      for (const p of peaks) {
+        const b = p.box;
+        if (!b) continue;
         ctx.beginPath();
-        ctx.roundRect(box.x + 0.5, box.y + 0.5, bw - 1, bh - 1, 4);
-        if (live) {
-          ctx.fillStyle = color;
-          ctx.fill();
-        } else {
-          ctx.fillStyle = `rgba(${INK.surface}, 0.9)`;
-          ctx.fill();
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 1;
-          ctx.stroke();
-        }
-        ctx.font = font;
-        ctx.fillStyle = live ? "#fff" : INK.text;
-        ctx.fillText(text, box.x + bw / 2, box.y + bh / 2 + 0.5);
+        ctx.roundRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1, 3);
+        ctx.fillStyle = `rgba(${INK.surface}, 0.72)`; // slightly see-through
+        ctx.fill();
+        ctx.strokeStyle = `rgba(${RGB.target}, 0.8)`;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.fillStyle = `rgb(${RGB.target})`;
+        ctx.fillText(p.text, b.x + b.w / 2, b.y + b.h / 2 + 0.5);
+        boxes.push(b);
+      }
+      return boxes;
+    }
+
+    // Your peaks: a light blue number, no background, over a light blue pointer that touches the apex
+    // of your brake line. Both have a dark outline so they read over the traces and fills.
+    // It sits above the apex, or below when above would run into a reference label, the
+    // header or another pin. Below, it reaches right from the apex: a peak is usually where the brake
+    // line tops out, so that's under the line rather than across the rise to it. The one
+    // you're braking in is placed first.
+    // Your peaks in view (behind the car), nearest the car first.
+    livePeaks(sc, X, Y) {
+      const isDist = sc.axis === "distance";
+      const out = [];
+      for (const e of sc.live.events) {
+        const v = isDist ? e.peakD - sc.now.D : e.peakT - sc.now.t;
+        if (e.peak >= sc.labels.min && v >= -sc.behind && v <= 0) out.push({ x: X(v), y: Y(e.peak), peak: e.peak, v });
+      }
+      return out.sort((a, b) => b.v - a.v);
+    }
+
+    drawPins(pins, plot, taken) {
+      const { ctx } = this;
+      ctx.font = `700 10.5px ${FONT}`;
+      const placed = [...taken];
+      const drawn = [];
+      for (const p of pins) {
+        const text = `${Math.round(p.peak * 100)}%`;
+        const w = Math.ceil(ctx.measureText(text).width) + 4;
+        const x = clamp(p.x - w / 2, plot.x, plot.x + plot.w - w);
+        const above = { x, y: p.y - 2 - PIN_TIP - PIN_H, w, h: PIN_H, up: false };
+        const below = { x: clamp(p.x - 9, plot.x, plot.x + plot.w - w), y: p.y + 2 + PIN_TIP, w, h: PIN_H, up: true };
+        const clear = (b) => b.y >= 2 && b.y + b.h <= plot.y + plot.h && !placed.some((q) => overlaps(q, b, 1));
+        const box = clear(above) ? above : clear(below) ? below : above;
+        placed.push(box);
+        drawn.push({ box, text, ax: clamp(p.x, box.x + 3, box.x + w - 3), ay: p.y });
+      }
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.lineJoin = "round";
+      ctx.strokeStyle = `rgba(${INK.surface}, 0.92)`;
+      ctx.fillStyle = `rgb(${RGB.you})`;
+      for (const { box, text, ax, ay } of drawn) {
+        // The pointer's tip sits on the top (or bottom) edge of the line at the apex.
+        const edge = box.up ? box.y + 1 : box.y + box.h - 1;
+        const tip = box.up ? ay + 2 : ay - 2;
+        const arrow = new Path2D();
+        arrow.moveTo(ax - 3.5, edge); arrow.lineTo(ax + 3.5, edge); arrow.lineTo(ax, tip); arrow.closePath();
+        ctx.lineWidth = 2;
+        ctx.stroke(arrow);
+        ctx.fill(arrow);
+        const tx = box.x + box.w / 2, ty = box.y + box.h / 2 + 0.5;
+        ctx.lineWidth = 3.5;
+        ctx.strokeText(text, tx, ty);
+        ctx.fillText(text, tx, ty);
       }
     }
   }

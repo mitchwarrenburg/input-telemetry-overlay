@@ -5,6 +5,8 @@
   /* Data — shared with graph.js */
   --throttle: #22e07a;
   --brake: #ff3d2e;
+  --you-rgb: 127, 209, 255; /* your peak labels */
+  --target-rgb: 245, 200, 80; /* the reference's peak: the target */
 
   /* HUD */
   --hud-surface: 7, 9, 10;
@@ -45,8 +47,17 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 .stage svg { width: 100%; height: 100%; display: block; stroke: none; }
 
 /* ============ Overlay ============ */
+/* Everything drawn on a window was tuned against its dark background. As the background
+   fades (--fade = 1 - --bg-alpha), the parts that relied on it keep a dark backing of
+   their own (--scrim) and text gets a dark halo, so lowering the background makes the
+   empty space see-through instead of washing the bar, fills and text out. */
 .ito-overlay {
   --bg-alpha: 0.8;
+  --fade: calc(1 - var(--bg-alpha));
+  --scrim: rgba(var(--hud-surface), calc(0.62 * var(--fade)));
+  /* Muted text lightens too: grey on a bright sim reads worse than on the dark panel. */
+  --hud-muted: color-mix(in srgb, #7f8b89, #e8efee calc(var(--fade) * 55%));
+  text-shadow: 0 0 3px rgba(var(--hud-surface), calc(0.95 * var(--fade))), 0 0 1px rgba(var(--hud-surface), var(--fade));
   position: fixed;
   left: 0;
   top: 0;
@@ -61,6 +72,24 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
   -webkit-user-select: none;
   touch-action: none;
 }
+/* Red pulse at the brake point (a try-out, on by default): a layer under the window's
+   contents flashes red for about half a second. */
+.ito-overlay::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background: rgba(214, 36, 24, 0.62);
+  opacity: 0;
+  pointer-events: none;
+}
+.ito-overlay.is-pulse::before { animation: brake-pulse 0.55s ease-out; }
+@keyframes brake-pulse {
+  12% { opacity: 1; }
+  to { opacity: 0; }
+}
+
 .ito-overlay:not(.is-locked):hover,
 .ito-overlay.is-moving,
 .ito-overlay.is-resizing {
@@ -77,9 +106,12 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 0 5px 0 11px;
+  padding: 0 3px 0 11px;
   z-index: 2;
 }
+/* Gear and close, at the header's right end. */
+.ito-tools { display: flex; gap: 1px; margin-left: auto; }
+.ito-tools .ito-gear { margin-left: 0; }
 .ito-overlay:not(.is-locked) .ito-header { cursor: grab; }
 .ito-overlay.is-moving .ito-header { cursor: grabbing; }
 
@@ -168,12 +200,13 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 .ito-anchor[data-dir="nw"]::after, .ito-anchor[data-dir="ne"]::after,
 .ito-anchor[data-dir="sw"]::after, .ito-anchor[data-dir="se"]::after { left: 4.5px; top: 4.5px; width: 9px; height: 9px; }
 .ito-anchor[data-dir="nw"] { left: -9px; top: -9px; cursor: nwse-resize; }
-.ito-anchor[data-dir="ne"] { right: -9px; top: -9px; cursor: nesw-resize; }
+.ito-anchor[data-dir="ne"] { right: -9px; top: -9px; width: 12px; height: 12px; cursor: nesw-resize; }
+.ito-anchor[data-dir="ne"]::after { left: 1.5px; top: 1.5px; }
 .ito-anchor[data-dir="sw"] { left: -9px; bottom: -9px; cursor: nesw-resize; }
 .ito-anchor[data-dir="se"] { right: -9px; bottom: -9px; cursor: nwse-resize; }
 
 .ito-anchor[data-dir="n"], .ito-anchor[data-dir="s"] { left: 9px; right: 9px; height: 10px; cursor: ns-resize; }
-.ito-anchor[data-dir="n"] { top: -5px; }
+.ito-anchor[data-dir="n"] { top: -5px; height: 7px; }
 .ito-anchor[data-dir="s"] { bottom: -5px; }
 .ito-anchor[data-dir="n"]::after, .ito-anchor[data-dir="s"]::after { left: 50%; top: 2px; width: 22px; height: 6px; margin-left: -11px; border-radius: 3px; }
 
@@ -223,16 +256,319 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 .ito-drop svg { color: var(--accent); }
 .ito-overlay.is-dragover .ito-drop { opacity: 1; }
 
+/* ============ Brake point countdown ============ */
+/* A second overlay window: 3-2-1-BRAKE into each reference brake point, the zone's
+   target peak, and how your brake timing compared. Grade colours are "r, g, b" so
+   chips and pips can tint them. */
+.ito-cue {
+  --brake-ink: #e0301f; /* solid red behind white text (4.5:1) */
+  /* The count builds in red, darker the nearer the brake point. */
+  --count-light: #ff6f62;
+  --count-deep: #8a1a11;
+  --perfect: 200, 36, 208; /* "fastest lap" purple */
+  width: 360px;
+  height: 96px;
+}
+.cue-head { gap: 10px; padding-right: 3px; }
+.cue-next {
+  font: 600 10.5px/1 var(--font-hud);
+  letter-spacing: 0.04em;
+  color: var(--hud-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.cue-pips { display: flex; align-items: center; gap: 3px; margin-left: auto; }
+.cue-pip {
+  width: 9px;
+  height: 5px;
+  border-radius: 1.5px;
+  background: linear-gradient(rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0.14)), var(--scrim);
+}
+.cue-pip.is-graded { background: rgb(var(--g)); }
+.cue-pip.is-stale { opacity: 0.35; }
+.cue-pip.is-current { opacity: 1; box-shadow: 0 0 0 1.5px rgba(var(--hud-surface), 1), 0 0 0 2.5px var(--hud-text); }
+.cue-tools { display: flex; gap: 1px; }
+/* The window's own opacity settings: --bg-alpha for its background, --fg-alpha for
+   everything drawn on it. */
+.ito-cue > .cue-head, .ito-cue > .cue-body, .ito-cue > .cue-expand { opacity: var(--fg-alpha, 1); }
+.cue-tools .ito-gear { margin-left: 0; }
+.cue-head .ito-title { flex: none; }
+
+.cue-body {
+  --fill: 0;
+  --join: 0;
+  --live: 0;
+  --target: 0;
+  --peak: -1;
+  position: absolute;
+  inset: 27px 10px 8px;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 7px;
+}
+/* The bar never gets shorter than 34 px (the full window's minimum height keeps it
+   there), so the count, BRAKE and the target gauge always have room. */
+.cue-main { display: flex; gap: 3px; min-height: 34px; }
+
+/* Bar: three one-count segments, filling toward the cap. */
+.cue-track {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 5px 1px 1px 5px;
+  background: linear-gradient(rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.07)), var(--scrim);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.cue-fill, .cue-join { position: absolute; top: 0; bottom: 0; }
+/* Spans the whole track and is clipped to the filled part, so the red darkens as it
+   builds toward the brake point. */
+.cue-fill {
+  left: 0;
+  right: 0;
+  background: linear-gradient(90deg, var(--count-light), var(--brake) 45%, var(--count-deep));
+  clip-path: inset(0 calc((1 - var(--fill)) * 100%) 0 calc(var(--join) * 100%));
+}
+/* The part a short straight skipped. */
+.cue-join {
+  left: 0;
+  width: calc(var(--join) * 100%);
+  background: repeating-linear-gradient(135deg, rgba(255, 255, 255, 0.16) 0 2px, transparent 2px 6px);
+}
+.cue-tick { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: rgba(var(--hud-surface), 0.75); }
+.cue-msg {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font: 600 clamp(10px, 11cqh, 13px)/1 var(--font-hud);
+  letter-spacing: 0.08em;
+  white-space: pre;
+  color: var(--hud-muted);
+  font-variant-numeric: tabular-nums;
+}
+.cue-msg:empty { display: none; }
+
+/* Cap: the count (3, 2, 1), then BRAKE. */
+.cue-cap {
+  flex: none;
+  width: clamp(58px, 17cqw, 110px);
+  display: grid;
+  place-items: center;
+  border-radius: 1px 5px 5px 1px;
+  background: var(--scrim);
+  box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.14);
+  padding-inline: 4px;
+  color: rgba(232, 239, 238, 0.4);
+  font: 700 clamp(12px, 15cqh, 20px)/1 var(--font-hud);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  /* The box is a size container too, so its text is sized to the box itself, not just
+     to the window. */
+  container-type: size;
+}
+/* "BRAKE" is about 3.6 em wide: at most 27% of the box's inner width per em, and 58% of
+   its height, keeps it inside at any window size (the window's height sets 1em). */
+.cue-cap span { display: block; line-height: 1; font-size: min(1em, 27cqi, 58cqh); }
+
+/* The cap: red outline, its tint deepening with each count. */
+.cue-body[data-mode="countdown"] .cue-cap {
+  color: #fff;
+  box-shadow: inset 0 0 0 1.5px var(--brake);
+  --tint: rgba(255, 61, 46, 0.1);
+  background: linear-gradient(var(--tint), var(--tint)), var(--scrim);
+}
+.cue-body[data-beat="2"] .cue-cap { --tint: rgba(200, 40, 28, 0.22); }
+.cue-body[data-beat="1"] .cue-cap { --tint: rgba(138, 26, 17, 0.45); }
+/* The count: 82% of the box's height (the digit's box is 1 em tall), 14–44 px. */
+.cue-body[data-mode="countdown"] .cue-cap span { font-size: clamp(14px, 82cqh, 44px); letter-spacing: 0; font-variant-numeric: tabular-nums; }
+/* Each count pops in; alternating names restart the animation on every change. */
+.cue-body[data-beat="3"] .cue-cap span, .cue-body[data-beat="1"] .cue-cap span { animation: cue-pop-a 0.22s ease-out; }
+.cue-body[data-beat="2"] .cue-cap span { animation: cue-pop-b 0.22s ease-out; }
+@keyframes cue-pop-a { from { transform: scale(1.35); opacity: 0.4; } }
+@keyframes cue-pop-b { from { transform: scale(1.35); opacity: 0.4; } }
+
+/* At the brake point: the whole bar and the cap solid red, with a slight glow. */
+.cue-body[data-mode="brake"] .cue-fill { background: var(--brake); }
+.cue-body[data-mode="brake"] .cue-cap { color: #fff; background: var(--brake-ink); box-shadow: none; }
+.cue-body[data-mode="brake"] .cue-track,
+.cue-body[data-mode="brake"] .cue-cap { box-shadow: 0 0 10px rgba(255, 61, 46, 0.5); }
+
+/* On the brake: the bar turns your timing grade's colour for a moment (--flash-a runs 1
+   to 0), then empties. Braked early, it stops short of the cap by how early. */
+.cue-body[data-flash] .cue-fill { background: rgb(var(--flash)); opacity: var(--flash-a); }
+.cue-body[data-flash] .cue-cap {
+  color: rgba(255, 255, 255, calc(0.4 + 0.6 * var(--flash-a)));
+  background: linear-gradient(rgba(224, 48, 31, var(--flash-a)), rgba(224, 48, 31, var(--flash-a))), var(--scrim);
+}
+/* Perfect: the whole bar and the cap light purple, with a glow. */
+.cue-body[data-flash="perfect"] .cue-fill { clip-path: none; background: rgb(var(--perfect)); }
+.cue-body[data-flash="perfect"] .cue-join { opacity: 0; }
+.cue-body[data-flash="perfect"] .cue-cap {
+  color: rgba(255, 255, 255, calc(0.4 + 0.6 * var(--flash-a)));
+  background: linear-gradient(rgba(var(--perfect), var(--flash-a)), rgba(var(--perfect), var(--flash-a))), var(--scrim);
+}
+.cue-body[data-flash="perfect"] .cue-track,
+.cue-body[data-flash="perfect"] .cue-cap { box-shadow: 0 0 14px rgba(var(--perfect), calc(0.8 * var(--flash-a))); }
+/* After it, the bar stays empty while you're still braking; the gauge has your pressure. */
+.cue-body[data-mode="braking"]:not([data-flash]) .cue-fill { opacity: 0; }
+.cue-body[data-mode="noref"] .cue-cap,
+.cue-body[data-mode="nozones"] .cue-cap { color: var(--hud-muted); }
+
+/* ---- Compact: just the bar ---- */
+.ito-cue.is-compact .cue-head,
+.ito-cue.is-compact .cue-verdict,
+.ito-cue.is-compact .cue-target,
+.ito-cue.is-compact .cue-msg { display: none; }
+.ito-cue.is-compact .cue-body { inset: 4px; grid-template-rows: minmax(0, 1fr); gap: 0; }
+.ito-cue.is-compact .cue-main { min-height: 0; }
+.ito-cue.is-compact .cue-cap { width: clamp(40px, 13cqw, 72px); font-size: clamp(10px, 34cqh, 16px); }
+
+.ito-cue.is-compact:not(.is-locked) { cursor: grab; }
+.ito-cue.is-compact.is-moving { cursor: grabbing; }
+
+/* The readout inside the bar (compact only): one number centred in each of the bar's
+   thirds, so none crosses the lines between the counts. */
+.cue-info { display: none; }
+.ito-cue.is-compact .cue-info {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: center;
+  pointer-events: none;
+  font: 700 clamp(11px, 36cqh, 14px)/1 var(--font-hud);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  /* A dark outline so the numbers read over any part of the fill. */
+  text-shadow: 0 0 2px rgb(var(--hud-surface)), 0 0 2px rgb(var(--hud-surface)), 0 0 3px rgb(var(--hud-surface));
+}
+/* Each on a faint dark backing, so it reads over any colour the bar takes. */
+.ci {
+  grid-row: 1;
+  justify-self: center;
+  max-width: calc(100% - 6px);
+  overflow: hidden;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: rgba(var(--hud-surface), 0.5);
+}
+.ci[hidden] { display: none; }
+.ci small { font-size: 0.68em; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(232, 239, 238, 0.75); }
+.ci small:empty { display: none; }
+.ci b { font-weight: 700; }
+.ci em { font-style: normal; font-size: 0.8em; color: rgba(232, 239, 238, 0.8); }
+.ci em:empty { display: none; }
+.ci-target { grid-column: 1; }
+.ci-target b { color: rgb(var(--target-rgb)); }
+.ci-you { grid-column: 2; }
+.ci-you b { color: rgb(var(--you-rgb)); }
+.ci-next { grid-column: 3; color: var(--hud-muted); }
+.ci-next b { font-weight: 600; letter-spacing: 0.04em; }
+.cue-info.is-message .ci-next { grid-column: 1 / -1; }
+@container (max-width: 250px) { .ito-cue.is-compact .ci small { display: none; } }
+
+/* Expand button: only in compact, only while hovering. */
+.cue-expand {
+  position: absolute;
+  top: 50%;
+  right: 7px;
+  z-index: 3;
+  width: 22px;
+  height: 22px;
+  margin-top: -11px;
+  display: none;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(46, 230, 160, 0.6);
+  border-radius: 6px;
+  background: rgba(var(--hud-surface), 0.92);
+  color: var(--hud-text);
+  cursor: pointer;
+}
+.cue-expand svg { stroke-width: 1.9; }
+.ito-cue.is-compact:not(.is-locked):hover .cue-expand { display: grid; }
+.cue-expand:hover { color: var(--accent); }
+.cue-expand:focus-visible { display: grid; outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* Target: the zone's reference peak, with your pressure filling up to it. */
+.cue-target { flex: none; display: flex; align-items: stretch; gap: 7px; margin-left: 7px; }
+.cue-gauge { position: relative; width: 6px; border-radius: 2px; background: linear-gradient(rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.08)), var(--scrim); }
+.cue-gauge i { position: absolute; left: 0; right: 0; }
+.cue-gauge-fill { bottom: 0; height: calc(var(--live) * 100%); border-radius: 2px; background: var(--brake); }
+.cue-gauge-peak { bottom: calc(var(--peak) * 100%); height: 2px; margin-bottom: -1px; background: #ff9b91; }
+.cue-gauge-target { left: -3px; right: -3px; bottom: calc(var(--target) * 100%); height: 2px; margin-bottom: -1px; border-radius: 1px; background: rgb(var(--target-rgb)); }
+.cue-body:not([data-mode="braking"]) .cue-gauge-peak { display: none; }
+.cue-target-text { display: grid; align-content: center; justify-items: start; gap: 4px; }
+.cue-target-text small {
+  font: 600 9px/1 var(--font-hud);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--hud-muted);
+}
+/* Gold, like the graph's reference peak labels. */
+.cue-target-text b {
+  padding: 3px 5px;
+  border: 1px solid rgba(var(--target-rgb), 0.85);
+  border-radius: 4px;
+  background: rgba(var(--hud-surface), 0.9);
+  color: rgb(var(--target-rgb));
+  font: 700 clamp(12px, 15cqh, 18px)/1 var(--font-hud);
+  font-variant-numeric: tabular-nums;
+}
+.cue-body[data-mode="idle"] .cue-target-text b { border-color: rgba(var(--target-rgb), 0.5); color: rgba(var(--target-rgb), 0.75); }
+
+/* Timing row: zone, grade, offset from the reference brake point, peak vs target. */
+.cue-verdict {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 18px;
+  overflow: hidden;
+  white-space: nowrap;
+  font: 600 11px/1 var(--font-hud);
+  color: var(--hud-muted);
+  font-variant-numeric: tabular-nums;
+}
+.cue-verdict.is-empty { font-weight: 500; }
+.cue-vzone { min-width: 16px; letter-spacing: 0.04em; }
+.cue-verdict.is-current .cue-vzone { color: var(--hud-text); }
+.cue-chip {
+  padding: 3px 6px 3px;
+  border-radius: 4px;
+  background: rgb(var(--g));
+  color: #07100c;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+/* Past the brake point and not braking yet: counts up until you do. */
+.cue-chip.is-pending { background: linear-gradient(rgba(var(--g), 0.14), rgba(var(--g), 0.14)), var(--scrim); color: rgb(var(--g)); box-shadow: inset 0 0 0 1px rgb(var(--g)); }
+.cue-vtime { color: var(--hud-text); font-weight: 700; font-size: 12px; }
+.cue-verdict.is-empty .cue-vtime { color: var(--hud-muted); font-weight: 500; font-size: 11px; }
+.cue-vpeak { margin-left: auto; letter-spacing: 0.04em; text-transform: uppercase; }
+.cue-vpeak b { color: var(--hud-text); font-weight: 700; }
+.cue-vpeak small { font-size: 10.5px; }
+
+@container (max-width: 330px) { .cue-pips { display: none; } .cue-tools { margin-left: auto; } }
+@container (max-width: 290px) { .cue-vdist, .cue-next { display: none; } }
+@container (max-width: 250px) { .cue-vpeak { display: none; } }
+
 /* ============ Settings popover ============ */
+/* Its height is set on open to fit the owner window's tallest tab (settings.js), so tabs
+   switch without the panel resizing or moving. Only the body scrolls, and only when the
+   screen is too short for that height; the title, tabs and footer stay put. */
 .ito-settings {
   position: fixed;
   z-index: 50;
   width: 304px;
   max-height: calc(100vh - 16px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: var(--ui-surface);
   border: 1px solid var(--ui-line);
   border-radius: 12px;
@@ -240,6 +576,22 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
   animation: pop-in 0.14s ease-out;
 }
 .ito-settings[hidden] { display: none; }
+.set-head, .set-tabs, .set-foot { flex: none; }
+.set-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+  /* Shadows at the top and bottom edges only while there's more to scroll to: the
+     surface-coloured covers scroll with the content, the shadows stay with the box. */
+  background:
+    linear-gradient(var(--ui-surface) 30%, rgba(14, 19, 20, 0)) top / 100% 28px no-repeat local,
+    linear-gradient(rgba(14, 19, 20, 0), var(--ui-surface) 70%) bottom / 100% 28px no-repeat local,
+    radial-gradient(farthest-side at 50% 0, rgba(0, 0, 0, 0.55), transparent) top / 100% 10px no-repeat scroll,
+    radial-gradient(farthest-side at 50% 100%, rgba(0, 0, 0, 0.55), transparent) bottom / 100% 10px no-repeat scroll;
+}
 @keyframes pop-in {
   from { opacity: 0; transform: translateY(var(--pop-from, -4px)) scale(0.985); }
 }
@@ -278,7 +630,7 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 }
 .set-tabs button {
   position: relative;
-  padding: 8px 8px 10px;
+  padding: 8px 7px 10px;
   border: 0;
   background: none;
   color: var(--ui-muted);
@@ -439,10 +791,53 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px 
   color: var(--ui-muted);
   font-size: 12px;
 }
-.label-key span { display: inline-flex; align-items: center; gap: 7px; }
+.label-key span { display: inline-flex; align-items: flex-start; gap: 7px; }
 .key-pill { padding: 3px 5px; border-radius: 4px; font: 700 11px/1 var(--font-hud); font-style: normal; }
-.key-live { background: #e0301f; color: #fff; }
-.key-ref { border: 1px solid rgba(255, 61, 46, 0.9); background: rgb(var(--hud-surface)); color: var(--hud-text); font-weight: 600; }
+/* As on the graph: your peak is a white number over a white pointer at the apex; the
+   reference's label sits on top of a dotted line. */
+.key-pill { position: relative; margin-bottom: 9px; }
+.key-live { padding: 3px 2px; color: rgb(var(--you-rgb)); text-shadow: 0 0 2px rgb(var(--hud-surface)), 0 0 2px rgb(var(--hud-surface)); }
+.key-live::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  margin-left: -3.5px;
+  border: 3.5px solid transparent;
+  border-top: 4px solid rgb(var(--you-rgb));
+  border-bottom: 0;
+}
+/* …and the dotted line through the peak. */
+.key-live::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 4px);
+  height: 5px;
+  border-left: 1px dotted rgba(var(--you-rgb), 0.7);
+}
+.key-ref { border: 1px solid rgba(var(--target-rgb), 0.8); background: rgba(var(--hud-surface), 0.72); color: rgb(var(--target-rgb)); font-weight: 600; }
+.key-ref::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  height: 9px;
+  border-left: 1px dotted rgba(var(--target-rgb), 0.7);
+}
+
+/* Grade key (Brakes tab) */
+.grade-key {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--ui-raised);
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+.grade-key span { display: grid; grid-template-columns: 74px 1fr; align-items: center; gap: 8px; }
+.grade-key .cue-chip { justify-self: start; font: 700 10px/1 var(--font-hud); font-style: normal; }
 
 /* Reference card */
 .ref-card {
@@ -551,6 +946,7 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px 
 .harness .icon-btn { color: var(--ui-text); background: rgba(255, 255, 255, 0.06); }
 .harness .icon-btn svg { width: 12px; height: 12px; fill: currentColor; stroke: none; }
 .seg-sm button { padding: 3px 8px; font-size: 12px; }
+.btn-sm { height: 26px; padding: 0 9px; font-size: 12px; white-space: nowrap; }
 .harness-hint {
   position: fixed;
   left: 18px;

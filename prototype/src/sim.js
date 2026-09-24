@@ -44,7 +44,9 @@
       zones.forEach((z, k) => {
         const lo = k ? Math.floor((zones[k - 1].end + z.start) / 2) : 0;
         const hi = k < zones.length - 1 ? Math.floor((z.end + zones[k + 1].start) / 2) : n - 1;
-        const shift = r(-9, 7); // samples: brake earlier (−) or later (+)
+        // Samples: brake earlier (−) or later (+). Bell-shaped, about ±0.35 s at the
+        // extremes, so the brake cue sees every timing grade.
+        const shift = (rand() + rand() + rand() - 1.5) * 14;
         const stretch = r(0.9, 1.15); // longer or shorter trail
         const scale = r(0.88, 1.3); // softer or harder pedal
         const spike = rand() < 0.5 ? r(0.04, 0.12) : 0; // initial stab

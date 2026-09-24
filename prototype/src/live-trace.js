@@ -13,7 +13,7 @@
       this.b = [];
       this.th = [];
       this.head = 0; // first live index; older entries await compaction
-      this.events = []; // { peak, peakT, peakD, active }
+      this.events = []; // { peak, peakT, peakD, active, onT, onD, onLap, onPct, offT }
       this.current = null;
       this.last = null;
     }
@@ -28,12 +28,13 @@
       const ev = this.current;
       if (!ev) {
         if (s.brake > ITO.BRAKE_ON) {
-          this.current = { peak: s.brake, peakT: s.t, peakD: s.D, active: true };
+          // Where the brake went on: the brake cue grades it against the reference.
+          this.current = { peak: s.brake, peakT: s.t, peakD: s.D, active: true, onT: s.t, onD: s.D, onLap: s.lap, onPct: s.pct };
           this.events.push(this.current);
         }
       } else {
         if (s.brake > ev.peak) Object.assign(ev, { peak: s.brake, peakT: s.t, peakD: s.D });
-        if (s.brake < ITO.BRAKE_OFF) { ev.active = false; this.current = null; }
+        if (s.brake < ITO.BRAKE_OFF) { ev.active = false; ev.offT = s.t; this.current = null; }
       }
     }
 

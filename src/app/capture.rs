@@ -41,11 +41,12 @@ pub fn write_png(path: &Path, image: &ColorImage) -> io::Result<()> {
     writer.finish().map_err(io::Error::other)
 }
 
-/// `--screenshot` / `--settings-screenshot`: once the windows have rendered for a
-/// moment, save them and ask to quit.
+/// `--screenshot` / `--settings-screenshot` / `--cue-screenshot`: once the windows have
+/// rendered for a moment, save them and ask to quit.
 pub struct Screenshots {
     overlay: Option<PathBuf>,
     settings: Option<PathBuf>,
+    cue: Option<PathBuf>,
     started: Instant,
     requested: bool,
 }
@@ -55,19 +56,21 @@ impl Screenshots {
     /// Give up on the overlay screenshot (e.g. the window never painted) after this.
     const GIVE_UP: Duration = Duration::from_secs(10);
 
-    /// `None` when neither screenshot was asked for.
-    pub fn new(overlay: Option<PathBuf>, settings: Option<PathBuf>) -> Option<Self> {
-        (overlay.is_some() || settings.is_some()).then(|| Self {
+    /// `None` when no screenshot was asked for.
+    pub fn new(overlay: Option<PathBuf>, settings: Option<PathBuf>, cue: Option<PathBuf>) -> Option<Self> {
+        (overlay.is_some() || settings.is_some() || cue.is_some()).then(|| Self {
             overlay,
             settings,
+            cue,
             started: Instant::now(),
             requested: false,
         })
     }
 
-    /// Call every overlay frame. `settings_px` is the settings window's screen rectangle
-    /// in physical pixels, if it's open. Returns true when done.
-    pub fn update(&mut self, ctx: &egui::Context, settings_px: Option<Rect>) -> bool {
+    /// Call every overlay frame. `settings_px` and `cue_px` are the settings and brake
+    /// point windows' screen rectangles in physical pixels, if they're open. Returns
+    /// true when done.
+    pub fn update(&mut self, ctx: &egui::Context, settings_px: Option<Rect>, cue_px: Option<Rect>) -> bool {
         // The capture happens on the paint after the request, and the result arrives
         // as an input event on the frame after that: keep frames coming.
         ctx.request_repaint();
@@ -95,6 +98,13 @@ impl Screenshots {
                     save(&path, &image);
                 }
                 None => log::error!("No settings window to capture for {}", path.display()),
+            }
+        }
+        if let Some(path) = self.cue.take() {
+            // The screen behind the window is in it: it's see-through.
+            match cue_px.and_then(capture_rect) {
+                Some(image) => save(&path, &image),
+                None => log::error!("No brake point window to capture for {}", path.display()),
             }
         }
         true

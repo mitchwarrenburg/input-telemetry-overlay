@@ -7,6 +7,14 @@
   const BRAKE_ON = 0.05; // brake event starts above this…
   const BRAKE_OFF = 0.02; // …and ends below this (hysteresis)
   const TELEMETRY_HZ = 60; // iRacing's disk/live telemetry rate
+  // Auto-blips (as src/lap.rs). With a Gear column, blips are found around each downshift;
+  // without, a pulse off BLIP_FLOOR that jumps BLIP_JUMP at once and is gone in BLIP_MAX_S.
+  const BLIP_MAX_S = 0.2;
+  const BLIP_FLOOR = 0.05;
+  const BLIP_JUMP = 0.15;
+  const BLIP_RISE = 0.05; // per sample while a blip builds
+  const BLIP_LEAD = 2; // samples a blip may start before the gear reads neutral
+  const BLIP_DECAY_S = 0.2; // after the new gear engages
 
   // "Garage 61 - Driver - Car - Track - 01.55.992 - ID.csv"
   function parseFileName(fileName) {
@@ -30,6 +38,48 @@
     const m = Math.floor(sec / 60);
     const s = sec - m * 60;
     return `${m}:${s.toFixed(3).padStart(6, "0")}`;
+  }
+
+  // A straight line from sample `from` to sample `to`, replacing those between.
+  function bridge(v, from, to) {
+    const a = v[from], b = v[to], span = to - from;
+    for (let k = from + 1; k < to; k++) v[k] = a + ((b - a) * (k - from)) / span;
+  }
+
+  // Garage 61 exports iRacing's Throttle, where the car blips the throttle on every
+  // downshift; the live line reads the pedal, which doesn't. Flattens them. Returns the count.
+  function removeBlips(thr, gear, hz) {
+    let removed = 0;
+    if (gear && gear.length === thr.length && gear.includes(0)) {
+      const n = thr.length, decay = Math.round(BLIP_DECAY_S * hz);
+      for (let i = 1; i < n; ) {
+        if (gear[i] !== 0 || gear[i - 1] <= 0) { i++; continue; }
+        const neutral = i;
+        while (i < n && gear[i] === 0) i++;
+        const engaged = i;
+        if (engaged === n || gear[engaged] <= 0 || gear[engaged] >= gear[neutral - 1]) continue; // upshift
+        let start = neutral;
+        while (start > 1 && neutral - start < BLIP_LEAD && thr[start - 1] > thr[start - 2] + BLIP_RISE) start--;
+        let end = engaged;
+        while (end + 1 < n && end < engaged + decay && thr[end + 1] < thr[end] - 0.01) end++;
+        const before = thr[start - 1];
+        if (!thr.slice(start, end).some((v) => v > before + 0.02)) continue;
+        bridge(thr, start - 1, end);
+        removed++;
+      }
+      return removed;
+    }
+    const longest = Math.max(1, Math.round(BLIP_MAX_S * hz));
+    for (let i = 1; i < thr.length; i++) {
+      if (thr[i] > BLIP_FLOOR && thr[i - 1] <= BLIP_FLOOR) {
+        let end = i;
+        while (end < thr.length && thr[end] > BLIP_FLOOR) end++;
+        if (end === thr.length) break;
+        if (end - i <= longest && thr[i] - thr[i - 1] >= BLIP_JUMP) { bridge(thr, i - 1, end); removed++; }
+        i = end;
+      }
+    }
+    return removed;
   }
 
   function findZones(brake) {
@@ -56,9 +106,9 @@
     if (missing.length) {
       throw new Error(`Missing column${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}. Export the lap from Garage 61 as CSV.`);
     }
-    const iPct = col("LapDistPct"), iBrake = col("Brake"), iThr = col("Throttle"), iSpd = col("Speed");
+    const iPct = col("LapDistPct"), iBrake = col("Brake"), iThr = col("Throttle"), iSpd = col("Speed"), iGear = col("Gear");
 
-    let pct = [], brake = [], throttle = [], speed = [];
+    let pct = [], brake = [], throttle = [], speed = [], gear = [];
     for (let r = 1; r < lines.length; r++) {
       if (!lines[r]) continue;
       const f = lines[r].split(",");
@@ -68,6 +118,7 @@
       brake.push(Math.min(1, Math.max(0, b)));
       throttle.push(Math.min(1, Math.max(0, t)));
       speed.push(iSpd >= 0 ? parseFloat(f[iSpd]) || 0 : 0);
+      gear.push(iGear >= 0 ? parseInt(f[iGear], 10) || 0 : 0);
     }
 
     // Exports often carry a sample or two from the neighbouring lap: drop whichever
@@ -75,7 +126,7 @@
     for (let i = 1; i < pct.length; i++) {
       if (pct[i] < pct[i - 1] - 0.5) {
         const keep = i > pct.length / 2 ? [0, i] : [i, pct.length];
-        [pct, brake, throttle, speed] = [pct, brake, throttle, speed].map((a) => a.slice(keep[0], keep[1]));
+        [pct, brake, throttle, speed, gear] = [pct, brake, throttle, speed, gear].map((a) => a.slice(keep[0], keep[1]));
         i = 0;
       }
     }
@@ -88,6 +139,7 @@
     let hz = meta.lapTime ? n / meta.lapTime : TELEMETRY_HZ;
     if (hz < 20 || hz > 400) hz = TELEMETRY_HZ;
     const lapTime = meta.lapTime || n / hz;
+    const blips = removeBlips(throttle, iGear >= 0 ? gear : null, hz);
 
     let trackLengthEst = null;
     if (iSpd >= 0) {
@@ -101,6 +153,7 @@
       hz,
       lapTime,
       lapTimeText: formatLapTime(lapTime),
+      blips,
       trackLengthEst,
       pct: Float64Array.from(pct),
       brake: Float32Array.from(brake),

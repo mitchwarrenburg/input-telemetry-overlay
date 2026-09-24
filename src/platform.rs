@@ -410,10 +410,15 @@ fn hwnd(window: &impl HasWindowHandle) -> Option<HWND> {
 /// click-through or visibility changes, so call this every frame; it only writes when
 /// the style is off.
 pub fn keep_no_activate(window: &impl HasWindowHandle) {
+    if let Some(hwnd) = hwnd(window) {
+        no_activate(hwnd);
+    }
+}
+
+fn no_activate(hwnd: HWND) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GWL_EXSTYLE, GetWindowLongPtrW, SetWindowLongPtrW, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     };
-    let Some(hwnd) = hwnd(window) else { return };
     // SAFETY: style reads and writes on a live window handle.
     unsafe {
         let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
@@ -427,11 +432,16 @@ pub fn keep_no_activate(window: &impl HasWindowHandle) {
 /// Re-enables DWM blur-behind with an empty region, which keeps transparent OpenGL
 /// windows transparent on AMD drivers (egui#4451).
 pub fn fix_transparency(window: &impl HasWindowHandle) {
+    if let Some(hwnd) = hwnd(window) {
+        blur_behind(hwnd);
+    }
+}
+
+fn blur_behind(hwnd: HWND) {
     use windows_sys::Win32::Graphics::Dwm::{
         DWM_BB_BLURREGION, DWM_BB_ENABLE, DWM_BLURBEHIND, DwmEnableBlurBehindWindow,
     };
     use windows_sys::Win32::Graphics::Gdi::{CreateRectRgn, DeleteObject};
-    let Some(hwnd) = hwnd(window) else { return };
     // SAFETY: the region is created, handed to DWM (which copies it) and freed here.
     unsafe {
         let region = CreateRectRgn(0, 0, -1, -1);
@@ -446,6 +456,195 @@ pub fn fix_transparency(window: &impl HasWindowHandle) {
             log::warn!("DwmEnableBlurBehindWindow failed: {hr:#x}");
         }
         DeleteObject(region);
+    }
+}
+
+/// A window of this program that eframe made for a secondary viewport, which egui gives
+/// no handle to: found by its title among this thread's windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeWindow(HWND);
+
+impl NativeWindow {
+    /// This thread's window titled `title`.
+    pub fn find(title: &str) -> Option<Self> {
+        use windows_sys::Win32::Foundation::LPARAM;
+        use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{EnumThreadWindows, GetWindowTextW};
+        struct Search {
+            title: Vec<u16>,
+            found: HWND,
+        }
+        unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> i32 {
+            // SAFETY: `lparam` is the `Search` below, alive for the whole enumeration.
+            let search = unsafe { &mut *(lparam as *mut Search) };
+            let mut buf = [0u16; 128];
+            // SAFETY: the buffer's length is passed.
+            let n = unsafe { GetWindowTextW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
+            if buf[..n.max(0) as usize] == search.title[..] {
+                search.found = hwnd;
+                return 0;
+            }
+            1
+        }
+        let mut search = Search { title: title.encode_utf16().collect(), found: std::ptr::null_mut() };
+        // SAFETY: the callback only reads window titles and writes to `search`.
+        unsafe { EnumThreadWindows(GetCurrentThreadId(), Some(visit), &raw mut search as LPARAM) };
+        (!search.found.is_null()).then_some(Self(search.found))
+    }
+
+    /// The window still exists (egui destroys a viewport's window when it isn't shown).
+    pub fn alive(self) -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
+        // SAFETY: IsWindow accepts any value.
+        unsafe { IsWindow(self.0) != 0 }
+    }
+
+    /// As [`keep_no_activate`]: call every frame.
+    pub fn keep_no_activate(self) {
+        no_activate(self.0);
+    }
+
+    /// As [`fix_transparency`].
+    pub fn fix_transparency(self) {
+        blur_behind(self.0);
+    }
+
+    /// Takes away the frame winit gives an undecorated window for a drop shadow, which
+    /// egui asks for and has no way to turn off for a secondary window: a 1 pt strip of
+    /// non-client area, around which Windows 11 draws a border and a shadow. The window's
+    /// procedure is wrapped to answer `WM_NCCALCSIZE` with the whole window as client
+    /// area, which is what winit does without the shadow. Once per window; later calls do
+    /// nothing.
+    pub fn remove_frame(self) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GWLP_WNDPROC, GetPropW, GetWindowLongPtrW, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+            SWP_NOZORDER, SetPropW, SetWindowLongPtrW, SetWindowPos,
+        };
+        // SAFETY: `frameless_proc` lives as long as the program, and passes everything but
+        // the one message on to the procedure it replaced, which it keeps in a property of
+        // the window (set before it takes over) until the window is destroyed.
+        unsafe {
+            if !GetPropW(self.0, ORIGINAL_PROC).is_null() {
+                return;
+            }
+            let original = GetWindowLongPtrW(self.0, GWLP_WNDPROC);
+            if original == 0 || SetPropW(self.0, ORIGINAL_PROC, original as HANDLE) == 0 {
+                log::warn!("Couldn't take the frame off a window: {}", io::Error::last_os_error());
+                return;
+            }
+            SetWindowLongPtrW(self.0, GWLP_WNDPROC, frameless_proc as *const () as isize);
+            // Have the frame worked out again, with the new procedure answering.
+            let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED;
+            SetWindowPos(self.0, std::ptr::null_mut(), 0, 0, 0, 0, flags);
+        }
+    }
+
+    /// Where the window is, physical pixels.
+    pub fn outer_px(self) -> Option<egui::Rect> {
+        use windows_sys::Win32::Foundation::RECT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect;
+        let mut r = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        // SAFETY: writes into `r`.
+        let ok = unsafe { GetWindowRect(self.0, &mut r) } != 0;
+        ok.then(|| {
+            egui::Rect::from_min_max(
+                egui::pos2(r.left as f32, r.top as f32),
+                egui::pos2(r.right as f32, r.bottom as f32),
+            )
+        })
+    }
+
+    /// Moves the window's top-left corner to `x`, `y` physical pixels, keeping its size.
+    pub fn move_to_px(self, x: i32, y: i32) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos,
+        };
+        let flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE;
+        // SAFETY: a plain call on a window handle.
+        unsafe { SetWindowPos(self.0, std::ptr::null_mut(), x, y, 0, 0, flags) };
+    }
+
+    /// Starts moving the window with the mouse, like a press on a title bar. (egui's
+    /// `StartDrag` wants focus, which the overlay's windows never take.)
+    pub fn start_move(self) {
+        self.start_sizing_loop(windows_sys::Win32::UI::WindowsAndMessaging::HTCAPTION);
+    }
+
+    /// Starts resizing the window from an edge or corner with the mouse.
+    pub fn start_resize(self, dir: egui::ResizeDirection) {
+        use egui::ResizeDirection::*;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT,
+        };
+        self.start_sizing_loop(match dir {
+            North => HTTOP,
+            South => HTBOTTOM,
+            East => HTRIGHT,
+            West => HTLEFT,
+            NorthEast => HTTOPRIGHT,
+            NorthWest => HTTOPLEFT,
+            SouthEast => HTBOTTOMRIGHT,
+            SouthWest => HTBOTTOMLEFT,
+        });
+    }
+
+    /// What winit's `drag_window` does: a non-client press at the cursor on `hit`.
+    fn start_sizing_loop(self, hit: u32) {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetCursorPos, PostMessageW, WM_NCLBUTTONDOWN};
+        let mut p = POINT { x: 0, y: 0 };
+        // SAFETY: plain calls; `p` outlives them.
+        unsafe {
+            GetCursorPos(&mut p);
+            ReleaseCapture();
+            let points = ((p.y as u32 & 0xffff) << 16) | (p.x as u32 & 0xffff);
+            PostMessageW(self.0, WM_NCLBUTTONDOWN, hit as usize, points as isize);
+        }
+    }
+}
+
+/// The window property holding the procedure [`NativeWindow::remove_frame`] replaced.
+const ORIGINAL_PROC: windows_sys::core::PCWSTR = windows_sys::core::w!("ito-original-wndproc");
+
+/// The procedure of a window whose frame [`NativeWindow::remove_frame`] took away.
+unsafe extern "system" fn frameless_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: windows_sys::Win32::Foundation::WPARAM,
+    lparam: windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::Win32::Foundation::LRESULT {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CallWindowProcW, DefWindowProcW, GWLP_WNDPROC, GetPropW, RemovePropW, SetWindowLongPtrW, WM_NCCALCSIZE,
+        WM_NCDESTROY, WNDPROC,
+    };
+    // SAFETY: the property holds the procedure this one replaced, a valid WNDPROC (it was
+    // set before this one took over); it's put back as the window goes.
+    unsafe {
+        // The whole window is client area: no frame to draw a border and shadow around.
+        if msg == WM_NCCALCSIZE && wparam != 0 {
+            return 0;
+        }
+        let original = GetPropW(hwnd, ORIGINAL_PROC) as isize;
+        if original == 0 {
+            return DefWindowProcW(hwnd, msg, wparam, lparam);
+        }
+        if msg == WM_NCDESTROY {
+            RemovePropW(hwnd, ORIGINAL_PROC);
+            SetWindowLongPtrW(hwnd, GWLP_WNDPROC, original);
+        }
+        let original = std::mem::transmute::<isize, WNDPROC>(original);
+        CallWindowProcW(original, hwnd, msg, wparam, lparam)
+    }
+}
+
+/// A beep through the speakers, on a worker thread (the call blocks while it plays).
+pub fn beep(hz: u32, ms: u32) {
+    use windows_sys::Win32::System::Diagnostics::Debug::Beep;
+    // SAFETY: plain call.
+    let spawned = std::thread::Builder::new().name("beep".into()).spawn(move || unsafe { Beep(hz, ms) });
+    if let Err(e) = spawned {
+        log::warn!("Couldn't beep: {e}");
     }
 }
 

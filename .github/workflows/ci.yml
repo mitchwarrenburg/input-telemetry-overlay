@@ -18,7 +18,31 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
       - run: cargo build --release
+      - name: Build the installer
+        shell: pwsh
+        run: ./installer/build.ps1
+      # Installs, checks and uninstalls it, so a broken installer is caught here rather
+      # than in a release.
+      - name: Test the installer
+        shell: pwsh
+        run: ./installer/smoke-test.ps1 (Get-ChildItem target/installer/*-setup.exe).FullName
       - uses: actions/upload-artifact@v7
         with:
           name: input-telemetry-overlay
-          path: target/release/input-telemetry-overlay.exe
+          path: |
+            target/release/input-telemetry-overlay.exe
+            target/installer/*-setup.exe
+
+  # A push to main (a merged pull request, or a direct push) that passes the checks
+  # above is released as the next version.
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # One release at a time, so merges close together get consecutive versions. (When
+    # several wait, only the newest runs; its release notes cover the others.)
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml

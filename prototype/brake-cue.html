@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Brake Design Board</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="src/styles.css">
+  <style>
+    /* Design board: every state of the brake point window, drawn by the same renderer
+       as the live prototype (index.html), fed fixed states. */
+    html, body { height: auto; }
+    body { overflow: auto; padding: 32px 16px 64px; }
+    .board { max-width: 1120px; margin: 0 auto; display: grid; gap: 40px; }
+    .board h1 { margin: 0 0 6px; font: 700 26px/1.15 var(--font-hud); letter-spacing: 0.02em; color: var(--ui-text); }
+    .board h2 {
+      margin: 0 0 14px;
+      font: 600 11px/1 var(--font-hud);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--ui-muted);
+    }
+    .lede { margin: 0; max-width: 72ch; color: var(--ui-muted); font-size: 14px; line-height: 1.55; }
+    .lede b, .note b { color: var(--ui-text); font-weight: 600; }
+    .lede a { color: var(--accent); }
+
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(372px, 1fr)); gap: 16px; }
+    .spec { display: grid; gap: 10px; align-content: start; }
+    /* A stand-in for the sim behind the window, so translucency reads as it would in the car. */
+    .backdrop {
+      display: grid;
+      place-items: center;
+      min-height: 124px;
+      padding: 14px 6px;
+      border-radius: 10px;
+      overflow: hidden;
+      background:
+        linear-gradient(170deg, transparent 58%, rgba(0, 0, 0, 0.25) 58%),
+        linear-gradient(#26384a 0%, #5a7182 46%, #2b4222 46%, #17240f 100%);
+    }
+    .backdrop .ito-overlay { position: relative; left: auto; top: auto; }
+    /* Show compact mode's expand button as if the pointer were over the bar. */
+    .backdrop .ito-cue.is-compact.is-hover-demo .cue-expand { display: grid; }
+    .backdrop .ito-cue.is-hover-demo { outline: 1px solid rgba(46, 230, 160, 0.55); }
+    /* The red pulse, held at its peak. */
+    .backdrop .ito-overlay.is-pulse-demo::before { opacity: 1; }
+    .cap-title { display: flex; align-items: baseline; gap: 8px; font-weight: 600; color: var(--ui-text); }
+    .cap-title span { font: 700 10px/1 var(--font-hud); letter-spacing: 0.1em; color: var(--accent); }
+    .note { margin: 0; color: var(--ui-muted); font-size: 12.5px; line-height: 1.5; }
+
+    /* Anatomy */
+    .anatomy { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 340px); gap: 28px; align-items: center; }
+    .anatomy .backdrop { min-height: 220px; position: relative; }
+    .callouts { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; counter-reset: c; }
+    .callouts li { display: grid; grid-template-columns: 22px 1fr; gap: 10px; color: var(--ui-muted); font-size: 13px; line-height: 1.45; }
+    .callouts li b { color: var(--ui-text); font-weight: 600; }
+    .dot-n {
+      display: grid;
+      place-items: center;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: var(--accent);
+      color: var(--accent-ink);
+      font: 700 11px/1 var(--font-hud);
+    }
+    .pin { position: absolute; z-index: 6; transform: translate(-50%, -50%); box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.35); }
+
+    /* Sequence strip */
+    .seq { display: grid; grid-template-columns: repeat(auto-fill, minmax(236px, 1fr)); gap: 12px; }
+    .seq .backdrop { min-height: 112px; }
+
+    /* Grade scale */
+    .scale { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border-radius: 10px; overflow: hidden; border: 1px solid var(--ui-line); }
+    .scale > div { display: grid; gap: 8px; align-content: start; padding: 14px 12px; background: var(--ui-raised); border-right: 1px solid var(--ui-line); }
+    .scale > div:last-child { border-right: 0; }
+    .scale .cue-chip { justify-self: start; font: 700 11px/1 var(--font-hud); }
+    .scale small { color: var(--ui-muted); font-size: 12px; line-height: 1.4; }
+    .scale strong { font: 700 14px/1 var(--font-hud); color: var(--ui-text); font-variant-numeric: tabular-nums; }
+
+    .graph-host { position: relative; height: 176px; border-radius: 10px; overflow: hidden; background: linear-gradient(#34495a, #1b2a18); }
+    .graph-host .ito-overlay { position: absolute; left: 12px; top: 12px; right: 12px; bottom: 12px; width: auto; height: auto; }
+
+    /* Peak labels */
+    .shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+    .shot { display: grid; gap: 6px; align-content: start; }
+    .shot .frame { overflow-x: auto; padding: 8px; border-radius: 10px; background: linear-gradient(#34495a, #1b2a18); }
+    .shot .ito-overlay { position: relative; left: auto; top: auto; }
+    .shots.wide { grid-template-columns: 1fr; }
+    .shots.wide .frame { justify-self: start; max-width: 100%; }
+    .rules { margin: 0; padding-left: 18px; display: grid; gap: 6px; color: var(--ui-muted); font-size: 13px; line-height: 1.5; max-width: 90ch; }
+    .rules b { color: var(--ui-text); font-weight: 600; }
+
+    table.spec-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .spec-table th, .spec-table td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--ui-line); vertical-align: top; }
+    .spec-table th { color: var(--ui-muted); font-weight: 600; font-size: 12px; white-space: nowrap; }
+    .spec-table td:first-child { color: var(--ui-text); font-weight: 600; white-space: nowrap; }
+    .spec-table td { color: var(--ui-muted); line-height: 1.45; }
+    .spec-table code { color: var(--ui-text); font-size: 12px; }
+
+    @media (max-width: 820px) {
+      .anatomy { grid-template-columns: 1fr; }
+      .scale { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .shots { grid-template-columns: 1fr; }
+      .scale > div { border-bottom: 1px solid var(--ui-line); }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="board">
+    <header>
+      <h1>Brake point countdown and peak labels</h1>
+      <p class="lede">A second overlay window that counts <b>3 · 2 · 1 · BRAKE</b> into each brake point of the loaded
+        reference lap, with the bar filling in step, so you can match when the reference driver got on the brake.
+        It shows the <b>target peak pressure</b> for the zone, then grades your timing:
+        <b>early, good, perfect or late</b> (with "very" either side). Every window below is drawn by the renderer the
+        <a href="index.html">live prototype</a> uses; open it and press <b>N</b> to jump to the next zone.
+        <a href="#labels">Peak labels</a>, further down, covers the redesign of the graph's brake peak labels.</p>
+    </header>
+
+    <section>
+      <h2>Anatomy</h2>
+      <div class="anatomy">
+        <div class="backdrop" id="anatomy"></div>
+        <ol class="callouts">
+          <li><span class="dot-n">1</span><span><b>Zone and distance.</b> Which brake zone is next (numbered in lap order) and how far to its brake point.</span></li>
+          <li><span class="dot-n">2</span><span><b>Zone strip.</b> One pip per zone, coloured by your last grade there. This lap's are bright, last lap's are dim, the next zone is ringed.</span></li>
+          <li><span class="dot-n">3</span><span><b>Countdown bar.</b> Three one-count segments filling toward the cap in red that darkens as the brake point nears.</span></li>
+          <li><span class="dot-n">4</span><span><b>Cap.</b> The count, then <b>BRAKE</b>: at the reference brake point the bar and the cap go solid red with a slight glow. When you brake, the bar shows your grade's colour for a moment, then empties (for Perfect the whole bar and the cap light purple).</span></li>
+          <li><span class="dot-n">5</span><span><b>Target.</b> The zone's reference peak, in gold like the graph's reference peak labels. The gauge fills with your pressure up to the gold target line.</span></li>
+          <li><span class="dot-n">6</span><span><b>Timing.</b> The last zone's grade, how far off the reference brake-on you were in seconds and metres (− early, + late), and your peak against the target.</span></li>
+        </ol>
+      </div>
+    </section>
+
+    <section>
+      <h2>Into a braking zone</h2>
+      <div class="seq" id="seq"></div>
+    </section>
+
+    <section>
+      <h2>Brake timing grades</h2>
+      <div class="scale" id="scale"></div>
+      <p class="note" style="margin-top: 10px">Graded on the reference lap's clock, so a slow corner and a fast one are judged alike.
+        <b>Perfect</b> is within <b>±0.03 s</b> and <b>Good</b> within <b>±0.08 s</b> (about 2 m and 5 m at 230 km/h); both are settings, and "very"
+        starts at 3× the good window. Chevrons point the way the graph does
+        (early is left, behind the car), so the grade reads without colour.</p>
+    </section>
+
+    <section>
+      <h2>Other cases</h2>
+      <div class="grid" id="cases"></div>
+    </section>
+
+    <section>
+      <h2>On the graph</h2>
+      <div class="graph-host"><section class="ito-overlay is-locked" id="graphOverlay"><canvas class="ito-canvas" id="graph"></canvas></section></div>
+      <p class="note" style="margin-top: 10px">With <b>Brake points on the graph</b> on: a small red <b>▲</b> on the 0% line at every reference brake point
+        (so the look-ahead shows the next one coming), and under it a short bar in the grade's colour from the
+        reference brake point to where you braked. The top of the plot is left to the peak labels.</p>
+    </section>
+
+    <section id="labels">
+      <h2>Peak labels</h2>
+      <ol class="rules">
+        <li><b>Reference peaks (gold).</b> A gold dotted line runs from the top of the plot through each reference peak (the hollow gold ring) down to the 0% line, under your lines. Its percentage is pinned to the top of the line, in a row of its own between the header and the plot (the plot moves down 6 px for it), so a label never covers a trace at 100% and never moves relative to its peak. Where two would overlap, the one farther from the car shifts up to 8 px, and if that isn't enough it's left off; its line stays.</li>
+        <li><b>Your peaks (light blue).</b> A light blue dotted line through each of your peaks, like the reference's, and a light blue number, no background, over a small light blue pointer that touches the apex of your brake line, exactly at the peak. Both have a thin dark outline so they read over the traces and fills. It sits above the apex, and drops below it only when above would run into a reference label, the header or another of your peak labels. Below, it reaches right from the apex, under the flat top of your brake line rather than across the rise to it. The one you're braking in rises with your pressure.</li>
+        <li><b>Nothing else moves them.</b> No searching for space and no leader lines: the reference numbers stay at the top, yours stay on your trace. A reference label passing the car draws over the top of the cursor, so its number isn't split; your peak labels draw over everything.</li>
+        <li><b>Brake point marks move down.</b> The countdown's brake point marks now sit on the 0% line (▲), leaving the top row to the labels.</li>
+      </ol>
+      <div class="shots wide" id="shotsWide" style="margin-top: 14px"></div>
+      <div class="shots" id="shots" style="margin-top: 12px"></div>
+    </section>
+
+    <section>
+      <h2>Sizes</h2>
+      <div class="grid" id="sizes"></div>
+    </section>
+
+    <section id="compact-mode">
+      <h2>Compact</h2>
+      <p class="note" style="margin: -4px 0 12px">The collapse button in the header (or its settings → Window → <b>Compact</b>) shrinks the window to just the bar.
+        Inside it, one number centred in each third of the bar: the <b style="color: rgb(245, 200, 80)">target</b> for the zone ahead; yours, which is your pressure
+        <b style="color: rgb(127, 209, 255)">now</b> while you're braking and then your <b style="color: rgb(127, 209, 255)">final</b> pressure in that zone for 3 s (or until the next countdown starts);
+        and the distance to the next brake point. Each layout keeps its own height; the top-left corner and width carry over.</p>
+      <div class="grid" id="compact"></div>
+    </section>
+
+    <section id="transparency">
+      <h2>Transparency</h2>
+      <p class="note" style="margin: -4px 0 12px">This window's settings (its gear) → Window has two opacities, apart from the graph's:
+        <b>Background</b> (0–100%, default 80%) and <b>Contents</b> (30–100%, default 100%) for the bar, text and header.
+        Background fades only the empty space: the bar and its box keep a dark backing in proportion, and grey text lightens and gets a
+        dark halo, so nothing washes out over a bright sim.</p>
+      <div class="grid" id="alpha"></div>
+    </section>
+
+    <section>
+      <h2>Behaviour</h2>
+      <table class="spec-table">
+        <tbody>
+          <tr><td>Clock</td><td>Everything runs on the reference lap's clock: <code>index at your LapDistPct ÷ Hz</code>. No speed channel needed. If you're slower down the straight the counts stretch, but BRAKE always lands on the reference brake point.</td></tr>
+          <tr><td>Brake point</td><td>Where the reference brake crosses 5% (the same threshold that finds brake zones and peak labels). Zones below <b>Skip zones below</b> (default 15%) get no countdown, but still take part in matching, so a light dab isn't mistaken for early braking into the next zone.</td></tr>
+          <tr><td>Countdown</td><td>Starts <b>Countdown</b> seconds (default 3 s, one count per second) before the brake point, minus <b>Cue early by</b> (default off; up to 0.3 s to allow for reaction). After a short straight it joins part-way, at 2 or 1, with the skipped part hatched. It never runs while the reference is still braking for the zone before.</td></tr>
+          <tr><td>Your brake-on</td><td>Your brake crossing 5%. It's matched to the first zone not yet over, if it's after the previous zone ended and no more than 4 s before the brake point. The first brake-on in a zone counts. Known gap: trail-braking without release through two reference zones (a chicane) reads as No brake for the second.</td></tr>
+          <tr><td>Grade</td><td><code>Δ = your brake-on − reference brake-on</code>, in reference seconds (the metres beside it are for landmarks). Perfect within ±0.03 s, good within ±0.08 s, early or late to 3× that, then very early or very late. Past the brake point without braking, the grade counts up live (outlined chip) until you brake. A zone driven through without braking is <b>No brake</b>.</td></tr>
+          <tr><td>Peak</td><td>Your highest pressure in the zone against the reference peak. The difference shows once you're off the brake.</td></tr>
+          <tr><td>Hold</td><td>The timing row keeps the last zone's result until the next zone is decided. The zone strip keeps one result per zone for this lap and the last.</td></tr>
+          <tr><td>Sound</td><td>Optional: a short beep on each count and a long, higher one on BRAKE.</td></tr>
+          <tr><td>Pulse</td><td>A try-out, on by default: as the brake point arrives (the moment BRAKE shows, whether or not you've braked yet), both windows' backgrounds flash red for half a second, under their contents.</td></tr>
+          <tr><td>Settings</td><td>This window's gear: <b>Countdown</b> (length, cue early by, skip zones below, beeps), <b>Grades</b> (good and perfect windows, grade key), <b>Window</b> (show, compact, background and contents opacity, lock, reset) and <b>Reference</b>, shared with the graph. The graph's gear keeps Display (with the brake point window on/off and lock), Labels (peak labels and the brake point marks), Timing and Reference.</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="data/sample-lap.js"></script>
+  <script src="src/lap.js"></script>
+  <script src="src/sim.js"></script>
+  <script src="src/live-trace.js"></script>
+  <script src="src/graph.js"></script>
+  <script src="src/brake-cue.js"></script>
+  <script src="src/board.js"></script>
+</body>
+</html>

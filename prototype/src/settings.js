@@ -36,70 +36,120 @@
   const ICON_WARN = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 2.8 19.5h18.4L12 4zM12 10v4.2M12 17v.2"/></svg>';
 
   // reference: { session, get(), load(file) → Promise, remove() }
-  function initSettingsPanel({ panel, gear, overlay, settings, reference, onResetLayout }) {
+  // owners: the windows with a gear, [{ id, gear, overlay, title, tabKey }]. The panel opens
+  // beside whichever window's gear opened it, with that window's tabs (tabs list their
+  // owners in data-for; Reference is in both) and its last tab (settings[tabKey]).
+  // onResetLayout(id): put that window back where it started.
+  function initSettingsPanel({ panel, owners, settings, reference, onResetLayout }) {
     const $ = (s) => panel.querySelector(s);
     const $$ = (s) => [...panel.querySelectorAll(s)];
     const isOpen = () => !panel.hidden;
+    const body = $(".set-body");
+    let owner = owners[0];
+    let natural = 0; // panel height that fits the owner's tallest tab
+    const MIN_H = 260; // below this it goes beside the window instead of scrolling
+
+    const ownTabs = () => $$("[role=tab]").filter((t) => t.dataset.for.split(" ").includes(owner.id));
+    const panelOf = (t) => $(`#panel-${t.dataset.tab}`);
 
     // ---------- open, close, placement ----------
-    // Sits outside the overlay (below, else above, else beside) so changes stay visible.
+    // The panel is as tall as the owner's tallest tab, so switching tabs never resizes or
+    // moves it; a tab that's shorter just leaves space at the bottom.
+    function measure() {
+      const shown = $$("[role=tabpanel]").find((p) => !p.hidden);
+      let tallest = 0;
+      for (const t of ownTabs()) {
+        for (const p of $$("[role=tabpanel]")) p.hidden = p !== panelOf(t);
+        tallest = Math.max(tallest, body.scrollHeight);
+      }
+      for (const p of $$("[role=tabpanel]")) p.hidden = p !== shown;
+      const chrome = $(".set-head").offsetHeight + $(".set-tabs").offsetHeight + $(".set-foot").offsetHeight + 2;
+      natural = Math.ceil(chrome + tallest);
+    }
+
+    // Outside the window so changes stay visible: below it, else above; if neither fits,
+    // on the roomier side at that height with the tab scrolling; only on a very short
+    // screen, beside it.
     function position() {
       if (!isOpen()) return;
-      const o = overlay.getBoundingClientRect();
-      const pw = panel.offsetWidth, ph = panel.offsetHeight;
+      const o = (owner.overlay.hidden ? owners[0] : owner).overlay.getBoundingClientRect();
+      const pw = panel.offsetWidth;
       const vw = root.innerWidth, vh = root.innerHeight, gap = 10, pad = 8;
+      const below = vh - pad - (o.bottom + gap), above = o.top - gap - pad;
       let left = Math.max(pad, Math.min(vw - pw - pad, o.right - pw));
-      let top, from;
-      if (o.bottom + gap + ph <= vh - pad) { top = o.bottom + gap; from = "-4px"; }
-      else if (o.top - gap - ph >= pad) { top = o.top - gap - ph; from = "4px"; }
-      else {
-        top = Math.max(pad, Math.min(vh - ph - pad, o.top));
+      let top, h = natural, from;
+      if (natural <= below) { top = o.bottom + gap; from = "-4px"; }
+      else if (natural <= above) { top = o.top - gap - natural; from = "4px"; }
+      else if (Math.max(below, above) >= MIN_H) {
+        h = Math.max(below, above);
+        top = below >= above ? o.bottom + gap : pad;
+        from = below >= above ? "-4px" : "4px";
+      } else {
+        h = Math.min(natural, vh - 2 * pad);
+        top = Math.max(pad, Math.min(vh - h - pad, o.top));
         left = o.right + gap + pw <= vw - pad ? o.right + gap : Math.max(pad, o.left - gap - pw);
         from = "0px";
       }
+      panel.style.height = `${Math.round(h)}px`;
       panel.style.left = `${Math.round(left)}px`;
       panel.style.top = `${Math.round(top)}px`;
       panel.style.setProperty("--pop-from", from);
     }
 
-    function open(tab) {
+    // After content that changes a tab's height (a lap loaded or removed, an error shown).
+    function refit() {
+      if (!isOpen()) return;
+      measure();
+      position();
+    }
+
+    function open(tab, from = owners[0]) {
+      if (owner !== from) owner.gear.setAttribute("aria-expanded", "false");
+      owner = from;
       panel.hidden = false;
-      gear.setAttribute("aria-expanded", "true");
-      selectTab(tab || settings.v.tab || "display");
+      owner.gear.setAttribute("aria-expanded", "true");
+      $("#setTitle").textContent = owner.title;
+      for (const t of $$("[role=tab]")) t.hidden = !t.dataset.for.split(" ").includes(owner.id);
       sync();
+      selectTab(tab || settings.v[owner.tabKey]);
+      measure();
       position();
     }
     function close() {
       if (!isOpen()) return;
       panel.hidden = true;
-      gear.setAttribute("aria-expanded", "false");
+      owner.gear.setAttribute("aria-expanded", "false");
     }
 
-    gear.addEventListener("click", () => (isOpen() ? close() : open()));
-    $("[data-close]").addEventListener("click", () => { close(); gear.focus(); });
+    for (const o of owners) {
+      o.gear.addEventListener("click", () => (isOpen() && owner === o ? close() : open(null, o)));
+    }
+    $("[data-close]").addEventListener("click", () => { close(); owner.gear.focus(); });
     document.addEventListener("pointerdown", (e) => {
-      if (isOpen() && !panel.contains(e.target) && !overlay.contains(e.target)) close();
+      if (isOpen() && !panel.contains(e.target) && !owners.some((o) => o.overlay.contains(e.target))) close();
     });
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && isOpen()) { close(); gear.focus(); }
+      if (e.key === "Escape" && isOpen()) { close(); owner.gear.focus(); }
     });
     root.addEventListener("resize", position);
 
     // ---------- tabs ----------
     function selectTab(name) {
+      const tabs = ownTabs();
+      if (!tabs.some((t) => t.dataset.tab === name)) name = tabs[0].dataset.tab; // e.g. a renamed tab
       for (const t of $$("[role=tab]")) {
         const on = t.dataset.tab === name;
         t.setAttribute("aria-selected", String(on));
         t.tabIndex = on ? 0 : -1;
       }
       for (const p of $$("[role=tabpanel]")) p.hidden = p.id !== `panel-${name}`;
-      settings.set("tab", name);
-      position();
+      body.scrollTop = 0;
+      settings.set(owner.tabKey, name);
     }
     for (const t of $$("[role=tab]")) t.addEventListener("click", () => selectTab(t.dataset.tab));
     $(".set-tabs").addEventListener("keydown", (e) => {
       if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
-      const tabs = $$("[role=tab]");
+      const tabs = ownTabs();
       const i = tabs.indexOf(document.activeElement);
       if (i < 0) return;
       const next = tabs[(i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
@@ -122,12 +172,13 @@
     for (const inp of $$("input[type=checkbox][data-setting]")) {
       inp.addEventListener("change", () => settings.set(inp.dataset.setting, inp.checked));
     }
-    $("#resetAll").addEventListener("click", () => settings.reset(["frame", "tab"]));
-    $("#resetLayout").addEventListener("click", () => onResetLayout && onResetLayout());
+    $("#resetAll").addEventListener("click", () => settings.reset(["frame", "cueFrame", "cueCompactFrame", "tab", "cueTab"]));
+    for (const b of $$("[data-reset]")) b.addEventListener("click", () => onResetLayout && onResetLayout(b.dataset.reset));
 
-    function format(k, v, unit) {
-      if (k.startsWith("ahead") && v === 0) return "Off";
-      return `${Number.isInteger(v) ? v : v.toFixed(1)}${unit || ""}`;
+    function format(k, v, inp) {
+      if ((k.startsWith("ahead") || k === "cueEarly") && v === 0) return "Off";
+      const d = inp.dataset.decimals;
+      return `${inp.dataset.prefix || ""}${d ? v.toFixed(Number(d)) : Number.isInteger(v) ? v : v.toFixed(1)}${inp.dataset.unit || ""}`;
     }
 
     function sync() {
@@ -137,7 +188,7 @@
         inp.value = v[k];
         inp.style.setProperty("--fill", `${((v[k] - inp.min) / (inp.max - inp.min)) * 100}%`);
         const out = panel.querySelector(`output[data-for="${k}"]`);
-        if (out) out.textContent = format(k, v[k], inp.dataset.unit);
+        if (out) out.textContent = format(k, v[k], inp);
       }
       for (const seg of $$(".seg[data-setting]")) {
         for (const b of seg.querySelectorAll("button")) {
@@ -181,13 +232,14 @@
     function showError(msg) {
       errorBox.textContent = msg || "";
       errorBox.hidden = !msg;
-      position();
+      refit();
     }
     async function take(file) {
       if (!file) return;
       showError("");
       try { await reference.load(file); } catch (e) { showError(e.message || String(e)); }
       if (!isOpen()) open("reference"); else selectTab("reference");
+      refit();
     }
 
     const hasFiles = (e) => [...((e.dataTransfer && e.dataTransfer.types) || [])].includes("Files");
@@ -218,7 +270,7 @@
     $("#refRemove").addEventListener("click", () => { reference.remove(); showError(""); });
 
     sync();
-    return { open, close, position, sync, take };
+    return { open, close, position, refit, sync, take };
   }
 
   Object.assign(ITO, { Settings, initSettingsPanel });

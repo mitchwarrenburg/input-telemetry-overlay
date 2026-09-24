@@ -3,6 +3,8 @@
 
 use eframe::egui::{self, Color32, FontFamily, FontId};
 
+use crate::cue::Grade;
+
 // ---- Data ----
 /// Throttle: lines and fills.
 pub const THROTTLE: Color32 = Color32::from_rgb(0x22, 0xe0, 0x7a);
@@ -10,6 +12,35 @@ pub const THROTTLE: Color32 = Color32::from_rgb(0x22, 0xe0, 0x7a);
 pub const BRAKE: Color32 = Color32::from_rgb(0xff, 0x3d, 0x2e);
 /// Live brake-peak pill: a step darker than the line so white text clears 4.5:1.
 pub const BRAKE_PILL: Color32 = Color32::from_rgb(0xe0, 0x30, 0x1f);
+
+// ---- Peaks and the brake point countdown ----
+/// Your peak labels and the lines through your peaks.
+pub const YOU: Color32 = Color32::from_rgb(127, 209, 255);
+/// The reference's peaks: the target.
+pub const TARGET: Color32 = Color32::from_rgb(245, 200, 80);
+/// The countdown's fill runs from this red…
+pub const COUNT_LIGHT: Color32 = Color32::from_rgb(0xff, 0x6f, 0x62);
+/// …through [`BRAKE`] to this one at the brake point.
+pub const COUNT_DEEP: Color32 = Color32::from_rgb(0x8a, 0x1a, 0x11);
+
+/// A timing grade's colour: blue early, green good, "fastest lap" purple perfect, amber
+/// to orange late, grey no brake.
+pub fn grade_color(grade: Grade) -> Color32 {
+    match grade {
+        Grade::VeryEarly => Color32::from_rgb(91, 140, 255),
+        Grade::Early => Color32::from_rgb(111, 193, 255),
+        Grade::Good => Color32::from_rgb(46, 230, 160),
+        Grade::Perfect => Color32::from_rgb(200, 36, 208),
+        Grade::Late => Color32::from_rgb(255, 177, 59),
+        Grade::VeryLate => Color32::from_rgb(255, 107, 61),
+        Grade::NoBrake => Color32::from_rgb(127, 139, 137),
+    }
+}
+
+/// Text on a grade's colour: white on purple, near-black on the rest.
+pub fn grade_ink(grade: Grade) -> Color32 {
+    if grade == Grade::Perfect { Color32::WHITE } else { Color32::from_rgb(7, 16, 12) }
+}
 
 // ---- HUD ----
 /// Overlay panel background (drawn with the user's opacity).
@@ -35,6 +66,19 @@ pub const UI_MUTED: Color32 = Color32::from_rgb(0x8b, 0x97, 0x95);
 pub const OK: Color32 = Color32::from_rgb(0x37, 0xd8, 0x8f);
 pub const WARN: Color32 = Color32::from_rgb(0xf5, 0xb4, 0x3c);
 pub const DANGER: Color32 = Color32::from_rgb(0xff, 0x7a, 0x70);
+
+/// A dark backing for what's drawn on a panel whose background has faded by `fade`
+/// (1 − its opacity), so the bar, fills and text keep their contrast over a bright sim
+/// instead of washing out with the background.
+pub fn scrim(fade: f32) -> Color32 {
+    alpha(SURFACE, 0.62 * fade)
+}
+
+/// Muted text on a panel faded by `fade`: lighter, since grey reads worse over the sim
+/// than over the dark panel.
+pub fn muted(fade: f32) -> Color32 {
+    HUD_MUTED.lerp_to_gamma(HUD_TEXT, 0.55 * fade.clamp(0.0, 1.0))
+}
 
 /// `color` at `alpha` (0..1) of its own alpha.
 pub fn alpha(color: Color32, alpha: f32) -> Color32 {

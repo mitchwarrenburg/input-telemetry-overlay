@@ -39,6 +39,12 @@ pub struct BrakeEvent {
     pub peak_d: f64,
     /// Still on the brake: `peak` is the running maximum.
     pub active: bool,
+    /// Where the brake went on (session seconds, cumulative metres): the brake point
+    /// countdown grades it against the reference's.
+    pub on_t: f64,
+    pub on_d: f64,
+    /// When it came off; `None` while [`Self::active`].
+    pub off_t: Option<f64>,
 }
 
 /// Rolling buffer of live samples plus the brake events inside it.
@@ -109,7 +115,15 @@ impl LiveTrace {
         match self.events.back_mut().filter(|e| e.active) {
             None => {
                 if s.brake > BRAKE_ON {
-                    self.events.push_back(BrakeEvent { peak: s.brake, peak_t: s.t, peak_d: s.d, active: true });
+                    self.events.push_back(BrakeEvent {
+                        peak: s.brake,
+                        peak_t: s.t,
+                        peak_d: s.d,
+                        active: true,
+                        on_t: s.t,
+                        on_d: s.d,
+                        off_t: None,
+                    });
                 }
             }
             Some(ev) => {
@@ -120,6 +134,7 @@ impl LiveTrace {
                 }
                 if s.brake < BRAKE_OFF {
                     ev.active = false;
+                    ev.off_t = Some(s.t);
                 }
             }
         }

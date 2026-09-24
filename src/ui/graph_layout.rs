@@ -1,12 +1,12 @@
-//! Pure layout helpers for the graph (axis ticks, label placement), kept free of
-//! egui drawing so they can be unit-tested.
+//! Pure layout helpers for the graph (axis ticks, peak labels), kept free of egui
+//! drawing so they can be unit-tested.
 //!
 //! All positions are painter coordinates (points). The x axis is the offset from the
 //! car in the axis' units (metres or seconds): negative behind, positive ahead.
 
 use std::ops::RangeInclusive;
 
-use eframe::egui::{Pos2, Rect, Vec2, pos2, vec2};
+use eframe::egui::{Pos2, Rect, pos2, vec2};
 
 /// Distance-axis tick steps, metres.
 const DIST_STEPS: [f64; 8] = [25.0, 50.0, 100.0, 200.0, 250.0, 500.0, 1000.0, 2000.0];
@@ -16,8 +16,15 @@ const TIME_STEPS: [f64; 5] = [0.5, 1.0, 2.0, 5.0, 10.0];
 const MAX_LAPS_IN_VIEW: f64 = 16.0;
 /// More ticks than this means a nonsensical window: none are made.
 const MAX_TICKS: f64 = 200.0;
-/// Brake-peak label height.
-pub const LABEL_HEIGHT: f32 = 16.0;
+/// Reference peak labels sit in a row (the rail) between the header and the plot, so
+/// they never cover a trace at 100 %: the plot moves down this much to make room.
+pub const RAIL_ROOM: f32 = 6.0;
+/// A rail label's height, and the gap under the rail to the plot's top edge.
+pub const RAIL_H: f32 = 13.0;
+const RAIL_GAP: f32 = 2.0;
+/// Your peak's number: its height, and its pointer's length.
+pub const PIN_H: f32 = 12.0;
+const PIN_TIP: f32 = 4.0;
 /// Lap-distance pill height.
 pub const PILL_HEIGHT: f32 = 14.0;
 /// X-band tick label height.
@@ -37,12 +44,14 @@ pub struct PlotLayout {
 }
 
 impl PlotLayout {
-    /// `None` when the panel is too small to plot anything.
-    pub fn new(panel: Rect, header_height: f32) -> Option<Self> {
+    /// `rail`: reference peak labels are shown, in their row above the plot. `None` when
+    /// the panel is too small to plot anything.
+    pub fn new(panel: Rect, header_height: f32, rail: bool) -> Option<Self> {
         let compact = panel.width() < 400.0;
         let x_band = panel.height() >= 118.0;
+        let top = panel.top() + header_height + 8.0 + if rail { RAIL_ROOM } else { 0.0 };
         let plot = Rect::from_min_max(
-            pos2(panel.left() + if compact { 26.0 } else { 32.0 }, panel.top() + header_height + 8.0),
+            pos2(panel.left() + if compact { 26.0 } else { 32.0 }, top),
             pos2(panel.right() - 10.0, panel.bottom() - if x_band { 20.0 } else { 8.0 }),
         );
         (plot.width() >= 40.0 && plot.height() >= 16.0).then_some(Self { plot, compact, x_band })
@@ -301,108 +310,69 @@ impl XBand {
     }
 }
 
-/// A brake peak that wants a label.
+/// Places the reference peak labels on the rail above the plot, nearest the car first
+/// (a peak ahead counts as half as far: it's the one coming). Each is centred over its
+/// peak, or nudged up to 8 pt aside when that would crowd one placed before; otherwise
+/// it's left off, and its dotted line still shows. `peaks`: each peak's x and its label's
+/// width. Returns each label's box, in the order given.
+pub fn place_rail(plot: Rect, cursor_x: f32, peaks: &[(f32, f32)]) -> Vec<Option<Rect>> {
+    let top = plot.top() - RAIL_GAP - RAIL_H;
+    let near = |x: f32| if x >= cursor_x { (x - cursor_x) * 0.5 } else { cursor_x - x };
+    let mut order: Vec<usize> = (0..peaks.len()).collect();
+    order.sort_by(|&a, &b| near(peaks[a].0).total_cmp(&near(peaks[b].0)));
+    let mut boxes = vec![None; peaks.len()];
+    let mut placed: Vec<Rect> = Vec::new();
+    for i in order {
+        let (x, w) = peaks[i];
+        let spot = [0.0, -4.0, 4.0, -8.0, 8.0].into_iter().find_map(|dx| {
+            let left = fit(x - w / 2.0 + dx, plot.left(), plot.right() - w);
+            let r = Rect::from_min_size(pos2(left, top), vec2(w, RAIL_H));
+            (!placed.iter().any(|q| overlaps(*q, r, 3.0))).then_some(r)
+        });
+        if let Some(r) = spot {
+            placed.push(r);
+            boxes[i] = Some(r);
+        }
+    }
+    boxes
+}
+
+/// Your peak's number, pinned to the apex of your brake line.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Peak {
-    /// The driver's own peak (solid pill), not the reference's (outlined pill).
-    pub live: bool,
-    /// Offset from the car.
-    pub v: f64,
-    /// Pedal, 0..1.
-    pub value: f32,
+pub struct Pin {
+    pub rect: Rect,
+    /// Under the apex, pointing up (there was no room above).
+    pub below: bool,
 }
 
-impl Peak {
-    /// `68%`.
-    pub fn text(&self) -> String {
-        format!("{}%", (self.value * 100.0).round() as i32)
-    }
-}
-
-/// Placement order: live peaks win collisions, then the ones nearest the car.
-pub fn sort_for_placement(peaks: &mut [Peak]) {
-    peaks.sort_by(|a, b| b.live.cmp(&a.live).then(a.v.abs().total_cmp(&b.v.abs())));
-}
-
-/// Where a label sits relative to its peak.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LabelSpot {
-    Above,
-    /// Above, one label higher (clear of a neighbour's label).
-    Stacked,
-    Right,
-    Left,
-    Below,
-}
-
-/// Places brake-peak labels one at a time, each clear of everything placed before it.
-#[derive(Debug, Clone)]
-pub struct LabelPlacer {
-    plot: Rect,
-    top: f32,
-    taken: Vec<Rect>,
-}
-
-impl LabelPlacer {
-    /// Labels stay inside the plot horizontally and between `top` and the plot's bottom
-    /// vertically: they may rise into the header strip, where `obstacles` (header items,
-    /// the x band, the cursor dots) keep them off what's drawn there.
-    pub fn new(plot: Rect, top: f32, obstacles: impl IntoIterator<Item = Rect>) -> Self {
-        Self { plot, top, taken: obstacles.into_iter().collect() }
+impl Pin {
+    /// Above the apex; or below it when above would leave the panel (`top`) or run into
+    /// something `taken` (reference labels, the header, another pin). Below, it reaches
+    /// right from the apex: a peak is usually where the brake line tops out, so that's
+    /// under the line rather than across the rise to it.
+    pub fn place(apex: Pos2, width: f32, plot: Rect, top: f32, taken: &[Rect]) -> Self {
+        let at = |x: f32, y: f32| {
+            Rect::from_min_size(pos2(fit(x, plot.left(), plot.right() - width), y), vec2(width, PIN_H))
+        };
+        let above = at(apex.x - width / 2.0, apex.y - 2.0 - PIN_TIP - PIN_H);
+        let below = at(apex.x - 9.0, apex.y + 2.0 + PIN_TIP);
+        let clear =
+            |r: Rect| r.top() >= top && r.bottom() <= plot.bottom() && !taken.iter().any(|q| overlaps(*q, r, 1.0));
+        if !clear(above) && clear(below) {
+            Self { rect: below, below: true }
+        } else {
+            Self { rect: above, below: false }
+        }
     }
 
-    /// The first free spot for a `width`-wide label on the peak at `at`: above, stacked
-    /// above, right, left, then below. Keeps clear (2 pt) of everything placed, including
-    /// earlier peaks' dots, and off its own dot. `None` when nothing fits: skip the label.
-    pub fn place(&mut self, at: Pos2, width: f32) -> Option<(Rect, LabelSpot)> {
-        let h = LABEL_HEIGHT;
-        let (x_min, x_max) = (self.plot.left(), self.plot.right() - width);
-        let centred = fit(at.x - width / 2.0, x_min, x_max);
-        let dot = Rect::from_center_size(at, Vec2::splat(10.0));
-        let candidates = [
-            (LabelSpot::Above, pos2(centred, at.y - 7.0 - h)),
-            (LabelSpot::Stacked, pos2(centred, at.y - 10.0 - 2.0 * h)),
-            (LabelSpot::Right, pos2(at.x + 8.0, at.y - h / 2.0)),
-            (LabelSpot::Left, pos2(at.x - 8.0 - width, at.y - h / 2.0)),
-            (LabelSpot::Below, pos2(centred, at.y + 7.0)),
-        ];
-        let (label, spot) = candidates
-            .into_iter()
-            .map(|(spot, min)| (Rect::from_min_size(min, vec2(width, h)), spot))
-            .find(|&(r, _)| {
-                (x_min - 0.5..=x_max + 0.5).contains(&r.left())
-                    && r.top() >= self.top
-                    && r.bottom() <= self.plot.bottom() - 1.0
-                    && !overlaps(dot, r, 0.0)
-                    && !self.taken.iter().any(|t| overlaps(*t, r, 2.0))
-            })?;
-        self.taken.extend([label, dot]);
-        Some((label, spot))
+    /// The pointer: its base on the number's edge nearest the apex, its tip on the
+    /// brake line's edge there (2 pt from its centre).
+    pub fn pointer(&self, apex: Pos2) -> [Pos2; 3] {
+        let x = fit(apex.x, self.rect.left() + 3.0, self.rect.right() - 3.0);
+        let (edge, tip) =
+            if self.below { (self.rect.top() + 1.0, apex.y + 2.0) } else { (self.rect.bottom() - 1.0, apex.y - 2.0) };
+        [pos2(x - 3.5, edge), pos2(x + 3.5, edge), pos2(x, tip)]
     }
-}
-
-/// How a label points at its peak.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Connector {
-    /// A pointer under the pill, straight above the peak.
-    Pointer([Pos2; 3]),
-    /// A hairline from the pill's edge to the peak.
-    Line(Pos2, Pos2),
-}
-
-/// The connector for a label placed at `spot`; `pointer` allows the pointer (live labels).
-pub fn connector(label: Rect, spot: LabelSpot, at: Pos2, pointer: bool) -> Connector {
-    let ax = fit(at.x, label.left() + 4.0, label.right() - 4.0);
-    if pointer && spot == LabelSpot::Above && ax == at.x {
-        let y = label.bottom() - 0.5;
-        return Connector::Pointer([pos2(at.x - 4.0, y), pos2(at.x + 4.0, y), pos2(at.x, label.bottom() + 4.0)]);
-    }
-    let from = match spot {
-        LabelSpot::Right => pos2(label.left(), label.center().y),
-        LabelSpot::Left => pos2(label.right(), label.center().y),
-        _ => pos2(ax, if label.bottom() <= at.y { label.bottom() } else { label.top() }),
-    };
-    Connector::Line(from, at)
 }
 
 #[cfg(test)]
@@ -416,7 +386,7 @@ mod tests {
     }
 
     fn layout(w: f32, h: f32) -> PlotLayout {
-        PlotLayout::new(panel(w, h), 26.0).unwrap()
+        PlotLayout::new(panel(w, h), 26.0, false).unwrap()
     }
 
     /// The prototype's defaults: 500 m behind and ahead.
@@ -442,8 +412,11 @@ mod tests {
         assert_eq!(l.plot.bottom(), 102.0);
         assert!(!l.x_band);
 
-        assert!(PlotLayout::new(panel(70.0, 170.0), 26.0).is_none());
-        assert!(PlotLayout::new(panel(680.0, 50.0), 26.0).is_none());
+        assert!(PlotLayout::new(panel(70.0, 170.0), 26.0, false).is_none());
+        assert!(PlotLayout::new(panel(680.0, 50.0), 26.0, false).is_none());
+
+        let railed = PlotLayout::new(panel(680.0, 170.0), 26.0, true).unwrap();
+        assert_eq!(railed.plot.top(), 44.0 + RAIL_ROOM, "moved down for the rail");
     }
 
     #[test]
@@ -602,143 +575,68 @@ mod tests {
     }
 
     #[test]
-    fn peaks_sort_live_first_then_nearest() {
-        let p = |live, v| Peak { live, v, value: 0.5 };
-        let mut peaks = [p(false, 10.0), p(true, -300.0), p(false, -5.0), p(true, -20.0)];
-        sort_for_placement(&mut peaks);
-        assert_eq!(peaks, [p(true, -20.0), p(true, -300.0), p(false, -5.0), p(false, 10.0)]);
-        assert_eq!(Peak { live: true, v: 0.0, value: 0.681 }.text(), "68%");
-        assert_eq!(Peak { live: true, v: 0.0, value: 1.0 }.text(), "100%");
-    }
-
-    #[test]
-    fn label_goes_above_its_peak_when_free() {
+    fn rail_labels_centre_over_their_peaks_nearest_first() {
         let l = layout(680.0, 170.0);
-        let mut placer = LabelPlacer::new(l.plot, 12.0, []);
-        let at = pos2(300.0, 120.0);
-        let (r, spot) = placer.place(at, 30.0).unwrap();
-        assert_eq!(spot, LabelSpot::Above);
-        assert_eq!(r, Rect::from_min_size(pos2(285.0, 97.0), vec2(30.0, LABEL_HEIGHT)));
-        assert_eq!(
-            connector(r, spot, at, true),
-            Connector::Pointer([pos2(296.0, 112.5), pos2(304.0, 112.5), pos2(300.0, 117.0)])
-        );
-        assert_eq!(connector(r, spot, at, false), Connector::Line(pos2(300.0, 113.0), at));
+        let cursor = 361.0;
+        let boxes = place_rail(l.plot, cursor, &[(300.0, 30.0), (500.0, 30.0)]);
+        let a = boxes[0].unwrap();
+        assert_eq!(a, Rect::from_min_size(pos2(285.0, l.plot.top() - 2.0 - RAIL_H), vec2(30.0, RAIL_H)));
+        assert_eq!(boxes[1].unwrap().center().x, 500.0);
+        // Three peaks within 40 pt: the nearest (ahead counts half) keeps its spot; the
+        // others have no room within 8 pt of it, so they are left off.
+        let close = place_rail(l.plot, cursor, &[(340.0, 30.0), (380.0, 30.0), (362.0, 30.0)]);
+        assert_eq!(close[2].unwrap().center().x, 362.0, "1 pt ahead: nearest");
+        let kept: Vec<Rect> = close.iter().flatten().copied().collect();
+        for (i, a) in kept.iter().enumerate() {
+            assert!(kept[i + 1..].iter().all(|b| !overlaps(*a, *b, 3.0)), "{kept:?}");
+        }
+        assert!(close[0].is_none() && close[1].is_none(), "no room within 8 pt: {close:?}");
+        let nudged = place_rail(l.plot, cursor, &[(380.0, 30.0), (348.0, 30.0)]);
+        assert_eq!(nudged[1].unwrap().center().x, 344.0, "4 pt aside is enough");
     }
 
     #[test]
-    fn labels_honour_obstacles() {
-        let l = layout(680.0, 170.0);
-        let at = pos2(300.0, 120.0);
-        // Something right above the peak pushes the label up a row.
-        let block = Rect::from_min_size(pos2(280.0, 100.0), vec2(40.0, 10.0));
-        let mut placer = LabelPlacer::new(l.plot, 12.0, [block]);
-        let (r, spot) = placer.place(at, 30.0).unwrap();
-        assert_eq!(spot, LabelSpot::Stacked);
-        assert!(!overlaps(r, block, 2.0));
-        // A wall across the plot's upper part leaves only the side spots.
-        let wall = Rect::from_min_max(pos2(0.0, 0.0), pos2(700.0, 116.0));
-        let mut placer = LabelPlacer::new(l.plot, 12.0, [wall]);
-        let (r, spot) = placer.place(at, 30.0).unwrap();
-        assert_eq!(spot, LabelSpot::Below);
-        assert_eq!(connector(r, spot, at, true), Connector::Line(pos2(300.0, 127.0), at));
-        // Blocked everywhere: skipped.
-        let mut placer = LabelPlacer::new(l.plot, 12.0, [l.plot.expand(20.0)]);
-        assert!(placer.place(at, 30.0).is_none());
-    }
-
-    #[test]
-    fn labels_avoid_each_other_and_other_peaks() {
-        let l = layout(680.0, 170.0);
-        let mut placer = LabelPlacer::new(l.plot, 12.0, []);
-        let a = pos2(300.0, 120.0);
-        let (ra, _) = placer.place(a, 30.0).unwrap();
-        // Same peak again: the spot above is taken, so it stacks.
-        let (rb, spot) = placer.place(a, 30.0).unwrap();
-        assert_eq!(spot, LabelSpot::Stacked);
-        assert!(!overlaps(ra, rb, 2.0));
-        // Just under the first peak, the spot above would cover that peak's dot.
-        let (rc, spot) = placer.place(pos2(300.0, 140.0), 30.0).unwrap();
-        assert_eq!(spot, LabelSpot::Right);
-        assert!(!overlaps(rc, Rect::from_center_size(a, Vec2::splat(10.0)), 2.0));
-        assert!(!overlaps(rc, ra, 2.0) && !overlaps(rc, rb, 2.0));
-    }
-
-    #[test]
-    fn side_labels_connect_from_their_near_edge() {
-        let l = layout(680.0, 170.0);
-        // No room above (the header reaches down to 40), so it goes right.
-        let at = pos2(300.0, 50.0);
-        let mut placer = LabelPlacer::new(l.plot, 40.0, []);
-        let (r, spot) = placer.place(at, 30.0).unwrap();
-        assert_eq!(spot, LabelSpot::Right);
-        assert_eq!(connector(r, spot, at, true), Connector::Line(pos2(308.0, 50.0), at));
-        // At the plot's right edge it goes left instead.
-        let at = pos2(l.plot.right() - 2.0, 50.0);
-        let (r, spot) = placer.place(at, 30.0).unwrap();
-        assert_eq!(spot, LabelSpot::Left);
-        assert_eq!(connector(r, spot, at, true), Connector::Line(pos2(at.x - 8.0, 50.0), at));
-    }
-
-    #[test]
-    fn close_reference_pair_on_a_narrow_panel_does_not_collide() {
-        // The prototype's sample-lap scene on a 300 pt panel: reference peaks of 59% at
-        // 3756 m and 33% at 3894 m (138 m is only 36 pt here), live peaks of 56% and 14%
-        // just behind the car at 3800 m.
-        let (p, l) = (panel(300.0, 190.0), layout(300.0, 190.0));
-        let s = metres(300.0, 190.0);
-        let mut band = XBand::new(l.plot, p);
-        band.place_pill(s.x(0.0), 34.0);
-        let cursor_dots = [0.0, 0.09].map(|v| Rect::from_center_size(pos2(s.x(0.0), s.y(v)), Vec2::splat(12.0)));
-        let mut placer = LabelPlacer::new(l.plot, p.top() + 2.0, band.into_taken().into_iter().chain(cursor_dots));
-        let mut peaks = [
-            Peak { live: false, v: 94.0, value: 0.33 },
-            Peak { live: false, v: -44.0, value: 0.59 },
-            Peak { live: true, v: -180.0, value: 0.14 },
-            Peak { live: true, v: -30.0, value: 0.56 },
-        ];
-        sort_for_placement(&mut peaks);
-        let at = |pk: &Peak| pos2(s.x(pk.v), s.y(pk.value));
-        let placed: Vec<(Rect, LabelSpot)> = peaks.iter().filter_map(|pk| placer.place(at(pk), 30.0)).collect();
-        let spots: Vec<LabelSpot> = placed.iter().map(|&(_, spot)| spot).collect();
-        // Like the prototype: the reference 59% stacks over the live 56%.
-        assert_eq!(spots, [LabelSpot::Above, LabelSpot::Above, LabelSpot::Stacked, LabelSpot::Above]);
-        let rects: Vec<Rect> = placed.iter().map(|&(r, _)| r).collect();
-        let dots: Vec<Rect> = peaks.iter().map(|pk| Rect::from_center_size(at(pk), Vec2::splat(10.0))).collect();
-        for (i, r) in rects.iter().enumerate() {
-            assert!(rects[i + 1..].iter().all(|o| !overlaps(*r, *o, 2.0)));
-            // Clear of its own dot and those of labels placed before it.
-            assert!(!overlaps(*r, dots[i], 0.0));
-            assert!(dots[..i].iter().all(|d| !overlaps(*r, *d, 2.0)));
-            assert!(cursor_dots.iter().all(|d| !overlaps(*r, *d, 2.0)));
+    fn rail_labels_stay_over_the_plot() {
+        let l = layout(300.0, 190.0);
+        for x in [l.plot.left() - 20.0, l.plot.left(), l.plot.right(), l.plot.right() + 20.0] {
+            let r = place_rail(l.plot, l.plot.center().x, &[(x, 30.0)])[0].unwrap();
+            assert!(r.left() >= l.plot.left() && r.right() <= l.plot.right(), "{r:?}");
         }
     }
 
     #[test]
-    fn labels_never_leave_the_plot() {
-        for (w, h) in [(680.0, 170.0), (300.0, 190.0), (272.0, 90.0)] {
-            let (p, l) = (panel(w, h), layout(w, h));
-            let top = p.top() + 2.0;
-            let mut placer = LabelPlacer::new(l.plot, top, []);
-            let mut placed = Vec::new();
-            for i in 0..=40 {
-                for j in 0..=10 {
-                    let at = pos2(
-                        l.plot.left() + l.plot.width() * i as f32 / 40.0,
-                        l.plot.top() + l.plot.height() * j as f32 / 10.0,
-                    );
-                    let width = 24.0 + (i % 3) as f32 * 6.0;
-                    if let Some((r, _)) = placer.place(at, width) {
-                        assert!(r.left() >= l.plot.left() - 0.5 && r.right() <= l.plot.right() + 0.5, "{r:?}");
-                        assert!(r.top() >= top && r.bottom() <= l.plot.bottom() - 1.0, "{r:?}");
-                        placed.push(r);
-                    }
-                }
-            }
-            assert!(!placed.is_empty());
-            for (i, a) in placed.iter().enumerate() {
-                assert!(placed[i + 1..].iter().all(|b| !overlaps(*a, *b, 2.0)));
-            }
+    fn a_pin_sits_above_its_apex_else_below_to_the_right() {
+        let l = layout(680.0, 170.0);
+        let apex = pos2(300.0, 100.0);
+        let pin = Pin::place(apex, 26.0, l.plot, 12.0, &[]);
+        assert!(!pin.below);
+        assert_eq!(pin.rect, Rect::from_min_size(pos2(287.0, 100.0 - 2.0 - 4.0 - PIN_H), vec2(26.0, PIN_H)));
+        let [a, b, tip] = pin.pointer(apex);
+        assert_eq!((a.y, b.y, tip), (pin.rect.bottom() - 1.0, pin.rect.bottom() - 1.0, pos2(300.0, 98.0)));
+
+        // A rail label right above: below, reaching right from the apex.
+        let label = Rect::from_min_size(pos2(290.0, 80.0), vec2(30.0, 13.0));
+        let pin = Pin::place(apex, 26.0, l.plot, 12.0, &[label]);
+        assert!(pin.below);
+        assert_eq!(pin.rect.min, pos2(291.0, 106.0));
+        assert_eq!(pin.pointer(apex)[2], pos2(300.0, 102.0));
+
+        // At 100 % near the header: above would leave the panel.
+        let high = pos2(300.0, l.plot.top());
+        assert!(Pin::place(high, 26.0, l.plot, l.plot.top() - 10.0, &[]).below);
+        // Nowhere clear: above anyway.
+        assert!(!Pin::place(apex, 26.0, l.plot, 12.0, &[l.plot.expand(30.0)]).below);
+    }
+
+    #[test]
+    fn pins_stay_over_the_plot_and_point_into_their_box() {
+        let l = layout(272.0, 90.0);
+        for x in [l.plot.left(), l.plot.center().x, l.plot.right()] {
+            let apex = pos2(x, l.plot.center().y);
+            let pin = Pin::place(apex, 30.0, l.plot, 12.0, &[]);
+            assert!(pin.rect.left() >= l.plot.left() && pin.rect.right() <= l.plot.right(), "{pin:?}");
+            let [a, b, _] = pin.pointer(apex);
+            assert!(a.x >= pin.rect.left() - 0.5 && b.x <= pin.rect.right() + 0.5, "{pin:?}");
         }
     }
 
@@ -811,12 +709,5 @@ mod tests {
             }
         }
         assert_eq!(message_center_x(compact, None, 400.0), compact.left() + 200.0);
-    }
-
-    #[test]
-    fn a_label_wider_than_the_plot_is_skipped() {
-        let l = layout(260.0, 170.0);
-        let mut placer = LabelPlacer::new(l.plot, 12.0, []);
-        assert!(placer.place(l.plot.center(), l.plot.width() + 10.0).is_none());
     }
 }

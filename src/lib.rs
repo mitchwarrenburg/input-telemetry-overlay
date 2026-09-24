@@ -4,6 +4,7 @@
 //! The library holds everything testable without a window; `main.rs` runs the app.
 
 pub mod app;
+pub mod cue;
 pub mod demo;
 pub mod lap;
 pub mod library;

@@ -1,4 +1,6 @@
-//! The settings window's content: Display, Labels, Timing and Reference tabs.
+//! The settings window's content. Each overlay window's gear opens its own tabs: the
+//! graph's Display, Labels and Timing, the brake point window's Countdown, Grades and
+//! Window, and Reference in both.
 
 use std::sync::Arc;
 
@@ -11,6 +13,7 @@ use eframe::egui::{
     Sense, Shape, Stroke, StrokeKind, TextFormat, Ui, UiBuilder, Vec2, pos2, vec2,
 };
 
+use crate::cue::Grade;
 use crate::lap::{Lap, format_lap_time};
 use crate::library::{Library, LibraryEntry};
 use crate::matching::MatchStatus;
@@ -23,6 +26,15 @@ use crate::ui::widgets::{
 
 /// Settings window width, points.
 pub const WIDTH: f32 = 304.0;
+
+/// Which window's gear opened the settings: its tabs are shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Owner {
+    #[default]
+    Graph,
+    /// The brake point window.
+    Cue,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionState {
@@ -52,6 +64,8 @@ pub struct PanelContext<'a> {
     pub file_hover: bool,
     /// Tallest the window can be, points; a taller tab scrolls.
     pub max_height: f32,
+    /// Whose tabs to show.
+    pub owner: Owner,
 }
 
 /// What the Reference tab's card shows.
@@ -89,6 +103,8 @@ pub enum PanelAction {
     /// (registering it may have failed before).
     SetHotkey(String),
     ResetLayout,
+    /// Put the brake point window back where it starts.
+    ResetCueLayout,
     /// Settings back to defaults (keeps window position, library and hotkey).
     ResetAll,
     DismissError,
@@ -118,12 +134,42 @@ const FOOT_HEIGHT: f32 = 1.0 + 9.0 + LINE_SMALL + 11.0 + 1.0;
 /// Where a pending "Remove?" (a lap id) is kept.
 const PENDING_REMOVE: &str = "ito_settings_pending_remove";
 
-const TABS: [(SettingsTab, &str); 4] = [
+const GRAPH_TABS: [(SettingsTab, &str); 4] = [
     (SettingsTab::Display, "Display"),
     (SettingsTab::Labels, "Labels"),
     (SettingsTab::Timing, "Timing"),
     (SettingsTab::Reference, "Reference"),
 ];
+const CUE_TABS: [(SettingsTab, &str); 4] = [
+    (SettingsTab::Countdown, "Countdown"),
+    (SettingsTab::Grades, "Grades"),
+    (SettingsTab::Window, "Window"),
+    (SettingsTab::Reference, "Reference"),
+];
+
+impl Owner {
+    fn tabs(self) -> &'static [(SettingsTab, &'static str); 4] {
+        match self {
+            Owner::Graph => &GRAPH_TABS,
+            Owner::Cue => &CUE_TABS,
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Owner::Graph => "Graph settings",
+            Owner::Cue => "Brake point settings",
+        }
+    }
+
+    /// The owner's open tab, kept per owner.
+    pub fn tab(self, s: &mut Settings) -> &mut SettingsTab {
+        match self {
+            Owner::Graph => &mut s.tab,
+            Owner::Cue => &mut s.cue_tab,
+        }
+    }
+}
 
 /// Draws the settings panel into `ui` (the whole settings window, which is
 /// transparent: the panel paints its own rounded background). Edits `settings` in
@@ -142,13 +188,32 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, cx: &PanelContext) -> Pa
     // Dimmed controls (`.is-disabled { opacity: 0.4 }`).
     panel.visuals_mut().disabled_alpha = 0.4;
 
-    head(&mut panel, &mut actions);
+    let owner = cx.owner;
+    if !owner.tabs().iter().any(|&(t, _)| t == *owner.tab(settings)) {
+        *owner.tab(settings) = owner.tabs()[0].0;
+    }
+    head(&mut panel, owner.title(), &mut actions);
     // Inside the 1 px border.
     Frame::new().inner_margin(Margin::symmetric(1, 0)).show(&mut panel, |ui| {
-        ui.add(TabBar::new(&mut settings.tab, &TABS));
+        ui.add(TabBar::new(owner.tab(settings), owner.tabs()));
     });
+    // The body is as tall as the owner's tallest tab, so switching tabs never resizes (or
+    // moves) the window; a shorter tab leaves room at the bottom. The open tab isn't
+    // measured: its unseen copy would see (and cancel) what's pending in the real one.
+    let open = *owner.tab(settings);
+    let mut tallest = 0.0_f32;
+    for &(tab, _) in owner.tabs().iter().filter(|&&(t, _)| t != open) {
+        tallest = tallest.max(measure_tab(&mut panel, settings, cx, tab));
+    }
     let body_max = cx.max_height - panel.min_rect().height() - FOOT_HEIGHT;
+    let before = panel.min_rect().height();
     let scrolled_off = tab_body(&mut panel, settings, cx, &mut actions, body_max);
+    let shown = panel.min_rect().height() - before;
+    let tallest = tallest.max(shown + scrolled_off);
+    let spare = tallest.min(body_max.max(0.0)) - shown;
+    if spare > 0.0 {
+        panel.add_space(spare);
+    }
     foot(&mut panel, cx.connection, &mut actions);
 
     let rect = Rect::from_min_size(origin, vec2(WIDTH, panel.min_rect().height()));
@@ -158,7 +223,30 @@ pub fn show(ui: &mut egui::Ui, settings: &mut Settings, cx: &PanelContext) -> Pa
     if ui.input(|i| i.key_pressed(Key::Escape)) {
         actions.push(PanelAction::Close);
     }
-    PanelOutput { actions, desired_height: rect.height() + scrolled_off }
+    // As tall as the tallest tab needs, even while a shorter one is open.
+    let hidden = (tallest - (shown + spare.max(0.0))).max(0.0).max(scrolled_off);
+    PanelOutput { actions, desired_height: rect.height() + hidden }
+}
+
+/// How tall a tab's body is, laid out unseen (it takes no input and paints nothing).
+fn measure_tab(panel: &mut Ui, settings: &Settings, cx: &PanelContext, tab: SettingsTab) -> f32 {
+    let mut copy = settings.clone();
+    *cx.owner.tab(&mut copy) = tab;
+    let mut ui = panel.new_child(
+        UiBuilder::new()
+            .id_salt(("measure_tab", tab))
+            .max_rect(Rect::from_min_size(panel.next_widget_position(), vec2(WIDTH, f32::INFINITY)))
+            .layout(Layout::top_down(Align::Min))
+            .invisible(),
+    );
+    ui.spacing_mut().item_spacing = Vec2::ZERO;
+    let mut actions = Vec::new();
+    Frame::new().inner_margin(TAB_MARGIN).show(&mut ui, |ui| {
+        ui.set_width(WIDTH - 2.0 * PAD_X);
+        ui.spacing_mut().item_spacing.y = GAP;
+        tab_contents(ui, &mut copy, cx, &mut actions);
+    });
+    ui.min_rect().height()
 }
 
 /// Forgets what the panel was in the middle of: a shortcut being picked, a pending
@@ -168,12 +256,12 @@ pub fn reset(ctx: &egui::Context) {
     ctx.data_mut(|d| d.remove::<String>(Id::new(PENDING_REMOVE)));
 }
 
-/// "OVERLAY SETTINGS" and the close button.
-fn head(ui: &mut Ui, actions: &mut Vec<PanelAction>) {
+/// "GRAPH SETTINGS" (or the brake point window's) and the close button.
+fn head(ui: &mut Ui, title: &str, actions: &mut Vec<PanelAction>) {
     // 1 px border, then padding 10 / 8 / 4 around a 26 px button.
     let (rect, _) = ui.allocate_exact_size(vec2(WIDTH, 41.0), Sense::hover());
     let close = Rect::from_min_size(pos2(rect.right() - 9.0 - 26.0, rect.top() + 11.0), Vec2::splat(26.0));
-    let title = widgets::caps(ui, "Overlay settings", theme::font(Weight::SemiBold, 10.5), theme::UI_MUTED, 0.1);
+    let title = widgets::caps(ui, title, theme::font(Weight::SemiBold, 10.5), theme::UI_MUTED, 0.1);
     let title_rect = Rect::from_x_y_ranges(rect.left() + PAD_X..=close.left(), close.y_range());
     widgets::paint_galley(ui.painter(), title_rect, Align2::LEFT_CENTER, title, theme::UI_MUTED);
     if ui.place(close, IconButton::new(Icon::Close, "Close settings")).clicked() {
@@ -199,25 +287,37 @@ fn tab_body(
             dormant_handle_opacity: 0.6,
             ..ScrollStyle::floating()
         };
+        let tab = *cx.owner.tab(settings);
         let out = ScrollArea::vertical()
-            .id_salt(("settings_body", settings.tab))
+            .id_salt(("settings_body", tab))
             .max_height(max_height.max(0.0))
             .auto_shrink([false, true])
             .show(ui, |ui| {
-                Frame::new().inner_margin(Margin { left: 15, right: 15, top: 13, bottom: 14 }).show(ui, |ui| {
+                Frame::new().inner_margin(TAB_MARGIN).show(ui, |ui| {
                     ui.set_width(WIDTH - 2.0 * PAD_X);
                     ui.spacing_mut().item_spacing.y = GAP;
-                    match settings.tab {
-                        SettingsTab::Display => display_tab(ui, settings, cx, actions),
-                        SettingsTab::Labels => labels_tab(ui, settings),
-                        SettingsTab::Timing => timing_tab(ui, settings),
-                        SettingsTab::Reference => reference_tab(ui, settings, cx, actions),
-                    }
+                    tab_contents(ui, settings, cx, actions);
                 });
             });
         (out.content_size.y - out.inner_rect.height()).max(0.0)
     })
     .inner
+}
+
+/// Padding around a tab's rows.
+const TAB_MARGIN: Margin = Margin { left: 15, right: 15, top: 13, bottom: 14 };
+
+/// The owner's open tab's rows.
+fn tab_contents(ui: &mut Ui, settings: &mut Settings, cx: &PanelContext, actions: &mut Vec<PanelAction>) {
+    match *cx.owner.tab(settings) {
+        SettingsTab::Display => display_tab(ui, settings, cx, actions),
+        SettingsTab::Labels => labels_tab(ui, settings),
+        SettingsTab::Timing => timing_tab(ui, settings),
+        SettingsTab::Countdown => countdown_tab(ui, settings),
+        SettingsTab::Grades => grades_tab(ui, settings),
+        SettingsTab::Window => window_tab(ui, settings, actions),
+        SettingsTab::Reference => reference_tab(ui, settings, cx, actions),
+    }
 }
 
 /// Section heading; it sits 7 px above its first row (CSS `margin-bottom: -6px`).
@@ -263,6 +363,8 @@ fn display_tab(ui: &mut Ui, s: &mut Settings, cx: &PanelContext, actions: &mut V
     if ui.add(Button::new("Reset size & position").fill_width()).clicked() {
         actions.push(PanelAction::ResetLayout);
     }
+    divider(ui);
+    ui.add(Switch::new(&mut s.cue_on, "Brake point window").hint("The countdown; its gear has its settings"));
 }
 
 // ---- Labels ----
@@ -279,34 +381,141 @@ fn labels_tab(ui: &mut Ui, s: &mut Settings) {
         ui.add(Slider::new("Ignore peaks below", &mut s.label_min, 0.0..=50.0).unit("%"));
         label_key(ui);
     });
+    divider(ui);
+    ui.add(
+        Switch::new(&mut s.cue_graph, "Brake points")
+            .hint("Marks each reference brake point and underlines your gap to it in its grade's colour"),
+    );
 }
 
-/// Explains the two label pills: solid is yours, outlined is the reference's.
+/// Explains the two labels: yours, a light blue number pointing at your peak; the
+/// reference's, a gold box at the top of its dotted line.
 fn label_key(ui: &mut Ui) {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 10.0 + LINE_SMALL + 10.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 12.0 + 26.0 + 12.0), Sense::hover());
     ui.painter().rect_filled(rect, 8.0, theme::UI_RAISED);
+    let painter = ui.painter();
+    let top = rect.top() + 12.0;
     let mut x = rect.left() + 12.0;
-    for (reference, pill, text) in [(false, "82%", "Your peak"), (true, "76%", "Reference peak")] {
-        let pill_rect = peak_pill(ui.painter(), pos2(x, rect.center().y), pill, reference);
-        let text = ui.painter().layout_no_wrap(text.to_owned(), theme::font(Weight::Regular, 12.0), theme::UI_MUTED);
-        let text_rect = Rect::from_x_y_ranges(pill_rect.right() + 7.0..=rect.right(), rect.y_range());
+    for (reference, value, text) in [(false, "82%", "Your peak, on its apex"), (true, "76%", "Reference peak")] {
+        let font = theme::font(if reference { Weight::SemiBold } else { Weight::Bold }, 10.5);
+        let color = if reference { theme::TARGET } else { theme::YOU };
+        let galley = painter.layout_no_wrap(value.to_owned(), font, color);
+        let w = galley.size().x + if reference { 8.0 } else { 2.0 };
+        let label = Rect::from_min_size(pos2(x, top), vec2(w, 14.0));
+        if reference {
+            painter.rect(
+                label,
+                3.0,
+                theme::alpha(theme::SURFACE, 0.72),
+                Stroke::new(1.0, theme::alpha(theme::TARGET, 0.8)),
+                StrokeKind::Inside,
+            );
+            let dots = Shape::dotted_line(
+                &[pos2(label.center().x, label.bottom() + 2.0), pos2(label.center().x, label.bottom() + 11.0)],
+                theme::alpha(theme::TARGET, 0.7),
+                3.0,
+                0.6,
+            );
+            painter.extend(dots);
+        } else {
+            let c = label.center_bottom();
+            painter.add(Shape::convex_polygon(
+                vec![pos2(c.x - 3.5, c.y + 1.0), pos2(c.x + 3.5, c.y + 1.0), pos2(c.x, c.y + 5.0)],
+                theme::YOU,
+                Stroke::NONE,
+            ));
+        }
+        widgets::paint_galley(painter, label, Align2::CENTER_CENTER, galley, color);
+        let text = painter.layout_no_wrap(text.to_owned(), theme::font(Weight::Regular, 12.0), theme::UI_MUTED);
+        let text_rect = Rect::from_x_y_ranges(label.right() + 7.0..=rect.right(), label.y_range());
         x = text_rect.left() + text.size().x + 16.0;
-        widgets::paint_galley(ui.painter(), text_rect, Align2::LEFT_CENTER, text, theme::UI_MUTED);
+        widgets::paint_galley(painter, text_rect, Align2::LEFT_CENTER, text, theme::UI_MUTED);
     }
 }
 
-/// A brake-peak label as the overlay draws it; returns its rect.
-fn peak_pill(painter: &Painter, left_center: Pos2, text: &str, reference: bool) -> Rect {
-    let (weight, color) = if reference { (Weight::SemiBold, theme::HUD_TEXT) } else { (Weight::Bold, Color32::WHITE) };
-    let galley = painter.layout_no_wrap(text.to_owned(), theme::font(weight, 11.0), color);
-    let rect = Rect::from_min_size(left_center - vec2(0.0, 8.5), vec2(galley.size().x + 10.0, 17.0));
-    if reference {
-        painter.rect(rect, 4.0, theme::SURFACE, Stroke::new(1.0, theme::alpha(theme::BRAKE, 0.9)), StrokeKind::Inside);
-    } else {
-        painter.rect_filled(rect, 4.0, theme::BRAKE_PILL);
+// ---- Countdown, Grades, Window (the brake point window's) ----
+
+fn countdown_tab(ui: &mut Ui, s: &mut Settings) {
+    ui.add_enabled_ui(s.cue_on, |ui| {
+        ui.add(Slider::new("Countdown", &mut s.cue_lead, 1.5..=4.5).step(0.5).unit(" s").detail("3 counts"));
+        ui.add(
+            Slider::new("Cue early by", &mut s.cue_early, 0.0..=0.3)
+                .step(0.05)
+                .decimals(2)
+                .unit(" s")
+                .detail("reaction allowance")
+                .off_at_zero(),
+        );
+        ui.add(Slider::new("Skip zones below", &mut s.cue_min, 0.0..=50.0).unit("%").detail("reference peak"));
+        ui.add(Switch::new(&mut s.cue_beep, "Beeps").hint("One per count, a long one on BRAKE"));
+    });
+    ui.add(Switch::new(&mut s.cue_pulse, "Red pulse on BRAKE").hint("Both windows' backgrounds, for half a second"));
+}
+
+fn grades_tab(ui: &mut Ui, s: &mut Settings) {
+    ui.add(
+        Slider::new("Good within", &mut s.cue_tol, 0.02..=0.2)
+            .step(0.01)
+            .decimals(2)
+            .prefix("±")
+            .unit(" s")
+            .detail("of the reference"),
+    );
+    ui.add(
+        Slider::new("Perfect within", &mut s.cue_perfect, 0.01..=0.06)
+            .step(0.01)
+            .decimals(2)
+            .prefix("±")
+            .unit(" s")
+            .detail("inside good"),
+    );
+    grade_key(ui, s);
+}
+
+/// Each grade's chip and its range at the current windows, tightest first (Perfect sits
+/// inside Good, so an early-to-late order would mislead).
+fn grade_key(ui: &mut Ui, s: &Settings) {
+    let (t, p) = (s.cue_tol, s.cue_perfect.min(s.cue_tol));
+    let rows = [
+        (Grade::Perfect, format!("within ±{p:.2} s")),
+        (Grade::Good, format!("within ±{t:.2} s")),
+        (Grade::Early, format!("{t:.2}–{:.2} s early", 3.0 * t)),
+        (Grade::Late, format!("{t:.2}–{:.2} s late", 3.0 * t)),
+        (Grade::VeryEarly, format!("over {:.2} s early", 3.0 * t)),
+        (Grade::VeryLate, format!("over {:.2} s late", 3.0 * t)),
+        (Grade::NoBrake, "no brake where the reference brakes".to_owned()),
+    ];
+    const ROW: f32 = 18.0;
+    let height = 10.0 + rows.len() as f32 * ROW + (rows.len() - 1) as f32 * 6.0 + 10.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 8.0, theme::UI_RAISED);
+    for (i, (grade, text)) in rows.into_iter().enumerate() {
+        let top = rect.top() + 10.0 + i as f32 * (ROW + 6.0);
+        widgets::grade_chip(painter, pos2(rect.left() + 12.0, top + ROW / 2.0), grade, 10.0);
+        let text = painter.layout_no_wrap(text, theme::font(Weight::Regular, 12.0), theme::UI_MUTED);
+        let text_rect = Rect::from_x_y_ranges(rect.left() + 12.0 + 74.0 + 8.0..=rect.right(), top..=top + ROW);
+        widgets::paint_galley(painter, text_rect, Align2::LEFT_CENTER, text, theme::UI_MUTED);
     }
-    widgets::paint_galley(painter, rect, Align2::CENTER_CENTER, galley, color);
-    rect
+}
+
+fn window_tab(ui: &mut Ui, s: &mut Settings, actions: &mut Vec<PanelAction>) {
+    ui.add(Switch::new(&mut s.cue_on, "Show this window").hint("Also on the graph's Display tab"));
+    ui.add_enabled_ui(s.cue_on, |ui| {
+        ui.add(Switch::new(&mut s.cue_compact, "Compact").hint("Just the bar"));
+    });
+    divider(ui);
+    section(ui, "Opacity");
+    ui.add_enabled_ui(s.cue_on, |ui| {
+        ui.add(Slider::new("Background", &mut s.cue_bg_opacity, 0.0..=100.0).unit("%"));
+        ui.add(Slider::new("Contents", &mut s.cue_fg_opacity, 30.0..=100.0).unit("%").detail("bar and text"));
+    });
+    divider(ui);
+    section(ui, "Layout");
+    ui.add(Switch::new(&mut s.locked, "Lock size & position").hint("Both windows"));
+    if ui.add_enabled(s.cue_on, Button::new("Reset size & position").fill_width()).clicked() {
+        actions.push(PanelAction::ResetCueLayout);
+    }
 }
 
 // ---- Timing ----
@@ -784,6 +993,7 @@ mod tests {
             browsing: false,
             file_hover: false,
             max_height: f32::INFINITY,
+            owner: Default::default(),
         }
     }
 
@@ -900,7 +1110,8 @@ mod tests {
             (Some(RefCard::Bundled(&lap, status(None))), None, Some("Missing column: Brake."), None),
             (None, None, None, Some(&session)),
         ];
-        for tab in TABS.map(|(t, _)| t) {
+        let tabs = [Owner::Graph, Owner::Cue].map(|o| o.tabs().map(|(t, _)| (o, t)));
+        for (owner, tab) in tabs.into_iter().flatten() {
             for (card, active_id, error, session) in states {
                 let cx = PanelContext {
                     library: if card.is_some() { &lib } else { &empty },
@@ -913,9 +1124,11 @@ mod tests {
                     browsing: error.is_some(),
                     file_hover: error.is_some(),
                     max_height: f32::INFINITY,
+                    owner,
                 };
                 let axis = if active_id.is_some() { Axis::Distance } else { Axis::Time };
-                let mut s = Settings { tab, labels: error.is_none(), axis, ..Default::default() };
+                let mut s = Settings { labels: error.is_none(), axis, ..Default::default() };
+                *owner.tab(&mut s) = tab;
                 let out = Harness::run(&mut s, &cx, Vec::new());
                 assert!(out.desired_height > 150.0 && out.desired_height < 900.0, "{tab:?}: {}", out.desired_height);
                 assert!(out.actions.is_empty());
@@ -924,12 +1137,22 @@ mod tests {
     }
 
     #[test]
-    fn display_tab_is_as_tall_as_the_prototype_plus_its_extra_rows() {
-        let lib = Library::default();
-        let out = Harness::run(&mut Settings::default(), &bare(&lib), Vec::new());
-        // Prototype: 378 px. Here the demo switch adds a row (18 + 13), the lock hint a
-        // second line (17) and the shortcut picker a labelled row (13 + 18 + 6 + 30).
-        assert!((out.desired_height - (378.0 + 31.0 + 17.0 + 67.0)).abs() <= 3.0, "{}", out.desired_height);
+    fn every_tab_of_a_window_is_as_tall_as_its_tallest() {
+        let lib = library();
+        for owner in [Owner::Graph, Owner::Cue] {
+            let cx = PanelContext { owner, ..bare(&lib) };
+            let heights: Vec<f32> = owner
+                .tabs()
+                .iter()
+                .map(|&(tab, _)| {
+                    let mut s = Settings::default();
+                    *owner.tab(&mut s) = tab;
+                    Harness::run(&mut s, &cx, Vec::new()).desired_height
+                })
+                .collect();
+            assert!(heights.iter().all(|h| (h - heights[0]).abs() < 0.5), "{owner:?}: {heights:?}");
+            assert!(heights[0] > 400.0 && heights[0] < 800.0, "{owner:?}: {heights:?}");
+        }
     }
 
     #[test]

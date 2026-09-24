@@ -16,7 +16,23 @@
     aheadS: 6,
     hz: 60,
     showRef: true,
-    tab: "display",
+    // Brake point countdown
+    cueOn: true,
+    cueLead: 3, // s for the three counts
+    cueEarly: 0, // s: show BRAKE this much before the reference brake point
+    cueMin: 15, // %: zones with a lower reference peak get no countdown
+    cueBeep: false,
+    cuePulse: true, // both windows' backgrounds pulse red at the brake point
+    cueTol: 0.08, // s: ± "good" window; "very" early/late past 3×
+    cuePerfect: 0.03, // s: ± "perfect" window, inside the good one
+    cueGraph: true,
+    cueCompact: false, // just the bar
+    cueBg: 80, // % background opacity of the brake point window
+    cueFg: 100, // % opacity of what's drawn on it
+    cueFrame: null, // full window
+    cueCompactFrame: null, // compact bar
+    tab: "display", // last tab in the graph's settings
+    cueTab: "countdown", // …and in the brake point window's
     frame: null,
   };
   const HEADER_H = 26;
@@ -62,19 +78,72 @@
   const frame = ITO.attachFrame(overlay, {
     handle: header,
     readout: document.getElementById("sizeReadout"),
-    minW: 260,
+    minW: 272, // the short title, the longest badge, the gear and the close button
     minH: 90,
     onChange: () => panel && panel.position(),
     onCommit: (r) => settings.set("frame", r),
   });
   frame.set(settings.v.frame || defaultFrame());
-  window.addEventListener("resize", () => frame.set(frame.get()));
+
+  // ---------- brake point countdown (its own window) ----------
+  const cueEl = document.getElementById("cue");
+  const cueView = new ITO.BrakeCueView(cueEl);
+  const cue = new ITO.BrakeCue();
+  const beeper = new ITO.CueBeeper();
+  let cueState = null;
+
+  // Default: centred just above the graph.
+  const CUE_H = 96, CUE_COMPACT_H = 40;
+  function defaultCueFrame() {
+    const o = frame.get(), w = 360, h = settings.v.cueCompact ? CUE_COMPACT_H : CUE_H;
+    const y = o.y - h - 12 >= 8 ? o.y - h - 12 : o.y + o.h + 12;
+    return { x: Math.round(o.x + (o.w - w) / 2), y, w, h };
+  }
+  const cueFrameKey = () => (settings.v.cueCompact ? "cueCompactFrame" : "cueFrame");
+  // Full: the header, a 34 px bar and the timing row. Compact: just the bar.
+  const cueMin = () => (settings.v.cueCompact ? [180, 30] : [230, 96]);
+  // In compact mode there's no header: the whole bar moves the window.
+  const cueFrame = ITO.attachFrame(cueEl, {
+    handle: cueEl,
+    readout: cueView.readout,
+    minW: cueMin()[0],
+    minH: cueMin()[1],
+    canMove: (e) => settings.v.cueCompact || !!e.target.closest(".cue-head"),
+    onChange: () => panel && panel.position(),
+    onCommit: (r) => settings.set(cueFrameKey(), r),
+  });
+  cueEl.classList.toggle("is-compact", settings.v.cueCompact);
+  cueFrame.set(settings.v[cueFrameKey()] || defaultCueFrame());
+  cueView.close.addEventListener("click", () => settings.set("cueOn", false));
+  cueView.collapse.addEventListener("click", () => settings.set("cueCompact", true));
+  cueView.expand.addEventListener("click", () => settings.set("cueCompact", false));
+
+  // Switching layouts keeps the window's top-left corner and width; each layout keeps its
+  // own height.
+  function applyCueLayout() {
+    const on = settings.v.cueCompact;
+    if (cueEl.classList.contains("is-compact") === on) return;
+    const cur = cueFrame.get();
+    settings.set(on ? "cueFrame" : "cueCompactFrame", cur); // the layout being left
+    cueEl.classList.toggle("is-compact", on);
+    cueFrame.setMin(...cueMin());
+    const kept = settings.v[cueFrameKey()];
+    settings.set(cueFrameKey(), cueFrame.set({ x: cur.x, y: cur.y, w: cur.w, h: kept ? kept.h : on ? CUE_COMPACT_H : CUE_H }));
+  }
+  // Prototype: the app quits here. Hide both windows until reload.
+  document.getElementById("quit").addEventListener("click", () => {
+    panel && panel.close();
+    overlay.hidden = cueEl.hidden = true;
+    document.querySelector(".harness-hint").textContent = "The app would quit here. Reload to bring the overlay back.";
+  });
+
+  window.addEventListener("resize", () => { frame.set(frame.get()); cueFrame.set(cueFrame.get()); });
 
   // Header items the peak labels must steer around (overlay-local px).
   function measureHeader() {
     const o = overlay.getBoundingClientRect();
     const bx = o.left + overlay.clientLeft, by = o.top + overlay.clientTop;
-    obstacles = [...header.querySelectorAll(".ito-title, .ito-legend, .ito-gear")]
+    obstacles = [...header.querySelectorAll(".ito-title, .ito-legend, .ito-tools")]
       .map((el) => el.getBoundingClientRect())
       .filter((r) => r.width > 0)
       .map((r) => ({ x: r.left - bx - 2, y: r.top - by - 2, w: r.width + 4, h: r.height + 4 }));
@@ -97,21 +166,50 @@
 
   function applyAppearance() {
     const v = settings.v;
+    for (const el of [overlay, cueEl]) el.classList.toggle("is-locked", v.locked);
     overlay.style.setProperty("--bg-alpha", v.bgOpacity / 100);
-    overlay.classList.toggle("is-locked", v.locked);
+    cueEl.style.setProperty("--bg-alpha", v.cueBg / 100);
+    cueEl.style.setProperty("--fg-alpha", v.cueFg / 100);
+    cueEl.hidden = !v.cueOn;
     document.getElementById("legendRef").hidden = !reference || !v.showRef;
     document.getElementById("legendRefTime").textContent = reference ? reference.lapTimeText : "–";
     measureHeader();
   }
   settings.on((k) => {
+    if (k === "cueCompact" || k === "*") applyCueLayout();
     applyAppearance();
-    if (k !== "frame") dirty = true;
+    if (k === "cueBeep" && settings.v.cueBeep) beeper.enable(); // a click, so audio may start
+    if (k === "cueTol" || k === "cuePerfect" || k === "*") renderGradeKey();
+    if (k !== "frame" && k !== "cueFrame" && k !== "cueCompactFrame") dirty = true;
   });
+
+  // Grade key in the brake point window's settings → Grades, with the current thresholds.
+  function renderGradeKey() {
+    const t = settings.v.cueTol, p = Math.min(settings.v.cuePerfect, t), f = (x) => x.toFixed(2);
+    // Tightest first: Perfect sits inside Good, so an early-to-late order would mislead.
+    const rows = [
+      ["perfect", `within ±${f(p)} s`],
+      ["good", `within ±${f(t)} s`],
+      ["early", `${f(t)}–${f(3 * t)} s early`],
+      ["late", `${f(t)}–${f(3 * t)} s late`],
+      ["veryEarly", `over ${f(3 * t)} s early`],
+      ["veryLate", `over ${f(3 * t)} s late`],
+      ["none", "no brake where the reference brakes"],
+    ];
+    document.getElementById("gradeKey").innerHTML = rows
+      .map(([g, text]) => `<span><i class="cue-chip" style="--g: ${ITO.GRADES[g].rgb}; color: ${ITO.GRADES[g].ink || ""}">${ITO.GRADES[g].chip}</i>${text}</span>`)
+      .join("");
+  }
+  renderGradeKey();
 
   panel = ITO.initSettingsPanel({
     panel: document.getElementById("settings"),
-    gear: document.getElementById("gear"),
-    overlay,
+    // Each window's gear opens its own settings; the Reference tab and the global rows
+    // (lock, the brake point window on/off) are in both.
+    owners: [
+      { id: "graph", gear: document.getElementById("gear"), overlay, title: "Graph settings", tabKey: "tab" },
+      { id: "cue", gear: cueView.gear, overlay: cueEl, title: "Brake point settings", tabKey: "cueTab" },
+    ],
     settings,
     reference: {
       session,
@@ -120,20 +218,27 @@
         if (!/\.csv$/i.test(file.name)) throw new Error("That isn't a CSV. In Garage 61, open the lap and export it as CSV.");
         reference = ITO.parseLapCsv(await file.text(), file.name);
         storeReference(reference);
+        cue.setReference(reference, session.trackLength);
         settings.set("showRef", true);
         applyAppearance();
         panel.sync();
+        panel.refit();
         dirty = true;
       },
       remove() {
         reference = null;
         storeReference(null);
+        cue.setReference(null, session.trackLength);
         applyAppearance();
         panel.sync();
+        panel.refit();
         dirty = true;
       },
     },
-    onResetLayout: () => settings.set("frame", frame.set(defaultFrame())),
+    onResetLayout: (id) => {
+      if (id === "cue") settings.set(cueFrameKey(), cueFrame.set(defaultCueFrame()));
+      else settings.set("frame", frame.set(defaultFrame()));
+    },
   });
   applyAppearance();
 
@@ -144,6 +249,31 @@
   for (let s = sim.step(1 / 60); ; s = sim.step(1 / 60)) {
     live.push(s);
     if (s.D >= 3800) break;
+  }
+  cue.setReference(reference, session.trackLength);
+
+  const cueCfg = () => {
+    const v = settings.v;
+    return { lead: v.cueLead, early: v.cueEarly, min: v.cueMin / 100, tol: v.cueTol, perfect: Math.min(v.cuePerfect, v.cueTol) };
+  };
+  // Restart the red pulse on both windows (removing and re-adding the class restarts
+  // the animation).
+  function pulse() {
+    for (const el of [overlay, cueEl]) {
+      el.classList.remove("is-pulse");
+      void el.offsetWidth;
+      el.classList.add("is-pulse");
+    }
+  }
+  function updateCue() {
+    const prev = cueState;
+    cueState = cue.update(live.last, live, cueCfg());
+    // As the brake point arrives, whether or not you've braked already.
+    if (settings.v.cuePulse && prev && prev.zoneNo === cueState.zoneNo && prev.untilBrake > 0 && cueState.untilBrake <= 0) pulse();
+    if (settings.v.cueOn) {
+      cueView.render(cueState);
+      if (settings.v.cueBeep) beeper.cue(prev, cueState);
+    }
   }
 
   function draw() {
@@ -159,7 +289,9 @@
       ref: reference,
       showRef: v.showRef,
       refOpacity: v.refOpacity / 100,
+      bgAlpha: v.bgOpacity / 100,
       labels: { show: v.labels, mode: v.labelMode, min: v.labelMin / 100 },
+      cue: v.cueGraph && cueState && cueState.cueZones ? cueState : null,
       headerH: HEADER_H,
       obstacles,
     });
@@ -177,12 +309,17 @@
       while (acc >= step && n < 240) { live.push(sim.step(step)); acc -= step; n++; }
       if (n) {
         const s = live.last;
+        updateCue();
         live.prune(s.t - 25, s.D - 1600); // widest window any setting can show
         updateHarness();
         dirty = true;
       }
     }
-    if (dirty) { dirty = false; draw(); }
+    if (dirty) {
+      dirty = false;
+      if (!playing) updateCue(); // settings changed while paused
+      draw();
+    }
     requestAnimationFrame(tick);
   }
 
@@ -198,11 +335,41 @@
   }
   playBtn.addEventListener("click", () => setPlaying(!playing));
   document.addEventListener("keydown", (e) => {
-    if (e.code === "Space" && !e.target.closest("input, button, [role=button], [role=tab]")) {
+    if (e.target.closest("input, button, [role=button], [role=tab]")) return;
+    if (e.code === "Space") {
       e.preventDefault();
       setPlaying(!playing);
-    }
+    } else if (e.code === "KeyN") skipToNextZone();
   });
+
+  // Fast-forward to a second before the next countdown starts.
+  function skipToNextZone() {
+    const target = cue.ref && cue.nextArmAt(live.last, cueCfg());
+    if (target == null) return;
+    for (let i = 0; i < 60 * 200; i++) {
+      const s = sim.step(1 / 60);
+      live.push(s);
+      if (i % 600 === 599) updateCue(); // grade zones on the way past
+      if (cue.clock(s.lap, s.pct) >= target) break;
+    }
+    updateCue();
+    live.prune(live.last.t - 25, live.last.D - 1600);
+    updateHarness();
+    dirty = true;
+  }
+  document.getElementById("nextZoneBtn").addEventListener("click", skipToNextZone);
+
+  // Step the sim by `sec` and redraw now (from the console, e.g. to catch a state).
+  function advance(sec) {
+    for (let i = 0; i < Math.round(sec * 60); i++) {
+      live.push(sim.step(1 / 60));
+      updateCue();
+    }
+    live.prune(live.last.t - 25, live.last.D - 1600);
+    updateHarness();
+    draw();
+    return cueState;
+  }
   const speedSeg = document.getElementById("speedSeg");
   speedSeg.addEventListener("click", (e) => {
     const b = e.target.closest("button[data-speed]");
@@ -218,9 +385,14 @@
   }
 
   setPlaying(true);
+  updateCue();
   updateHarness();
   requestAnimationFrame(tick);
 
   // Handy from the dev console.
-  window.ITO_APP = { settings, live, sim, graph, panel, setPlaying, get reference() { return reference; } };
+  window.ITO_APP = {
+    settings, live, sim, graph, panel, setPlaying, cue, cueView, skipToNextZone, advance,
+    get reference() { return reference; },
+    get cueState() { return cueState; },
+  };
 })();
