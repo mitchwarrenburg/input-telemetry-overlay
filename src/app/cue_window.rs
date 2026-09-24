@@ -14,11 +14,11 @@ use crate::settings::{Settings, WindowRect};
 use crate::trace::LiveTrace;
 use crate::ui::cue_view::{self, CueFrame, CueIntent};
 use crate::ui::graph::CarNow;
-use crate::ui::overlay::Chrome;
+use crate::ui::overlay::{Chrome, MARGIN};
 
 /// Unique among this program's windows: the native window is found by it.
 const TITLE: &str = "Input Telemetry Overlay: brake point";
-/// Between the graph and the brake point window's default spot, points.
+/// Between the graph's panel and the brake point window's at its default spot, points.
 const GAP: f32 = 12.0;
 /// The size readout stays up this long after the window stops changing size.
 const READOUT_HOLD: Duration = Duration::from_millis(800);
@@ -121,16 +121,16 @@ impl CueWindow {
         if self.shown {
             let rect = default_window(settings.cue_compact, screen.home);
             self.place = Some(rect.min);
-            self.resize(ctx, rect_size(settings.cue_compact), Instant::now());
+            send(ctx, self.resize(rect_size(settings.cue_compact), Instant::now()));
         }
     }
 
-    /// Asks for a new size; the window's own isn't saved until it arrives.
-    fn resize(&mut self, ctx: &egui::Context, size: Vec2, now: Instant) {
-        // The minimum first, or a compact size would be held at the full one's.
-        ctx.send_viewport_cmd_to(viewport(), ViewportCommand::MinInnerSize(min_window(self.compact)));
-        ctx.send_viewport_cmd_to(viewport(), ViewportCommand::InnerSize(size));
+    /// Asks for a new size (the window's own isn't saved until it arrives): the commands
+    /// that set it.
+    fn resize(&mut self, size: Vec2, now: Instant) -> [ViewportCommand; 2] {
         self.sizing = Some((size, now));
+        // The minimum first, or a compact size would be held at the full one's.
+        [ViewportCommand::MinInnerSize(min_window(self.compact)), ViewportCommand::InnerSize(size)]
     }
 
     /// Shows the window for this frame (while `settings.cue_on`). `screen` places a new
@@ -173,7 +173,7 @@ impl CueWindow {
             self.compact = compact;
             self.sizing = None;
         } else if compact != self.compact {
-            self.switch_layout(ctx, settings, now);
+            send(ctx, self.switch_layout(settings, now));
         }
 
         let chrome = Chrome {
@@ -232,16 +232,16 @@ impl CueWindow {
     }
 
     /// Collapsing or expanding keeps the window's top-left corner and width; each layout
-    /// has its own height.
-    fn switch_layout(&mut self, ctx: &egui::Context, settings: &mut Settings, now: Instant) {
+    /// has its own height. Returns the commands that resize the window.
+    fn switch_layout(&mut self, settings: &mut Settings, now: Instant) -> [ViewportCommand; 2] {
         let current = if self.compact { settings.cue_compact_window } else { settings.cue_window };
         self.compact = settings.cue_compact;
-        let Some(cur) = current else { return };
+        let Some(cur) = current else { return self.resize(rect_size(self.compact), now) };
         let kept = *slot(settings);
         let h = kept.map_or_else(|| rect_size(self.compact).y, |w| w.h);
         let size = vec2(cur.w, h.max(min_window(self.compact).y));
         *slot(settings) = Some(WindowRect { h: size.y, ..cur });
-        self.resize(ctx, size, now);
+        self.resize(size, now)
     }
 
     /// Remembers where the window is (position in physical pixels, size in points) for
@@ -282,6 +282,12 @@ pub fn viewport() -> ViewportId {
     ViewportId::from_hash_of("ito-brake-point")
 }
 
+fn send(ctx: &egui::Context, commands: impl IntoIterator<Item = ViewportCommand>) {
+    for command in commands {
+        ctx.send_viewport_cmd_to(viewport(), command);
+    }
+}
+
 /// The saved spot for the current layout.
 fn slot(settings: &mut Settings) -> &mut Option<WindowRect> {
     if settings.cue_compact { &mut settings.cue_compact_window } else { &mut settings.cue_window }
@@ -306,16 +312,17 @@ pub struct Screen {
     pub home: Option<(Monitor, Rect)>,
 }
 
-/// The default window, physical pixels: centred just above the graph's panel, or below
-/// it when there's no room above.
+/// The default window, physical pixels: its panel centred just above the graph's panel,
+/// or below it when there's no room above.
 fn default_window(compact: bool, home: Option<(Monitor, Rect)>) -> Rect {
     let size = rect_size(compact);
     let Some((monitor, panel)) = home else {
         return Rect::from_min_size(pos2(100.0, 100.0), size);
     };
     let top = monitor.rect.top() / monitor.scale;
-    let above = panel.top() - GAP - size.y;
-    let y = if above >= top + 8.0 { above } else { panel.bottom() + GAP };
+    // The windows' anchor margins overlap the gap.
+    let above = panel.top() - GAP + MARGIN - size.y;
+    let y = if above >= top { above } else { panel.bottom() + GAP - MARGIN };
     let rect = Rect::from_min_size(pos2(panel.center().x - size.x / 2.0, y), size);
     Rect::from_min_max(rect.min * monitor.scale, rect.max * monitor.scale)
 }
@@ -332,10 +339,35 @@ mod tests {
         let w = default_window(false, Some((MONITOR, panel)));
         assert_eq!(w.size(), geometry::window_size(cue_view::DEFAULT_PANEL));
         assert_eq!(w.center().x, panel.center().x);
-        assert_eq!(w.bottom(), panel.top() - GAP);
+        assert_eq!(w.shrink(MARGIN).bottom(), panel.top() - GAP, "panels 12 apart");
 
         let high = Rect::from_min_size(pos2(620.0, 20.0), vec2(680.0, 170.0));
-        assert_eq!(default_window(true, Some((MONITOR, high))).top(), high.bottom() + GAP, "below");
+        let below = default_window(true, Some((MONITOR, high)));
+        assert_eq!(below.shrink(MARGIN).top(), high.bottom() + GAP, "below");
+    }
+
+    #[test]
+    fn collapsing_keeps_the_corner_and_width_and_each_layout_its_height() {
+        let now = Instant::now();
+        let full = WindowRect { x: 500.0, y: 300.0, w: 420.0, h: 130.0, px: true };
+        let mut settings = Settings { cue_window: Some(full), ..Default::default() };
+        let mut window = CueWindow::new(&settings, now);
+        window.shown = true;
+
+        settings.cue_compact = true;
+        let asked = window.switch_layout(&mut settings, now);
+        let compact = vec2(420.0, rect_size(true).y);
+        // The smaller minimum first, or the compact height would be held at the full one's.
+        assert_eq!(asked, [ViewportCommand::MinInnerSize(min_window(true)), ViewportCommand::InnerSize(compact)]);
+        assert_eq!(settings.cue_compact_window, Some(WindowRect { h: compact.y, ..full }));
+        assert_eq!(settings.cue_window, Some(full), "the full layout's own is kept");
+
+        // Resized while compact, then expanded: back to the full height, the new width.
+        settings.cue_compact_window = Some(WindowRect { x: 640.0, w: 300.0, ..settings.cue_compact_window.unwrap() });
+        settings.cue_compact = false;
+        let asked = window.switch_layout(&mut settings, now);
+        assert_eq!(asked[1], ViewportCommand::InnerSize(vec2(300.0, 130.0)));
+        assert_eq!(settings.cue_window, Some(WindowRect { x: 640.0, w: 300.0, ..full }));
     }
 
     #[test]

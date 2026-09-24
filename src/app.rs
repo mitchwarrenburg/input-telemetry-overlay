@@ -343,7 +343,10 @@ impl OverlayApp {
                 DesktopEvent::OpenSettings if self.settings_open => {
                     ctx.send_viewport_cmd_to(settings_viewport(), ViewportCommand::Focus);
                 }
-                DesktopEvent::OpenSettings => self.settings_open = true,
+                DesktopEvent::OpenSettings => {
+                    self.settings_owner = Owner::Graph;
+                    self.settings_open = true;
+                }
                 DesktopEvent::SetLocked(locked) => self.settings.locked = locked,
                 DesktopEvent::ToggleLock => self.settings.locked = !self.settings.locked,
                 DesktopEvent::ResetPosition => reset_layout(ctx, frame),

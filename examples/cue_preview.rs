@@ -1,7 +1,10 @@
 //! Renders the brake point window in each of its states, full and compact, over a
 //! backdrop like a sim's, and saves them as one PNG.
 //!
-//! `cargo run --example cue_preview -- [out.png]` (default: `<temp>/ito-cue-preview.png`).
+//! ```text
+//! cargo run --example cue_preview -- [out.png]    # default: <temp>/ito-cue-preview.png
+//! cargo run --example cue_preview -- --docs DIR   # the README's images, see-through
+//! ```
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -187,25 +190,70 @@ fn backdrop(painter: &egui::Painter, rect: Rect) {
     }
 }
 
+/// The README's images: the window mid-count, and compact while braking.
+fn docs_cases() -> Vec<Case> {
+    vec![
+        Case::new("brake-point", counting(2, 0.55)),
+        Case::new(
+            "brake-point-compact",
+            CueState {
+                fill: 1.0,
+                live: 0.45,
+                peak: Some(0.47),
+                flash: Some(Flash { grade: Grade::Good, alpha: 1.0 }),
+                verdict: Some(verdict(Grade::Good, 0.05, false, true, Some(0.47))),
+                ..base(CueMode::Braking)
+            },
+        )
+        .compact(),
+    ]
+}
+
+/// The docs cases one under another, unlabelled.
+fn docs_layout(cases: &[Case]) -> (Vec<Rect>, Vec2) {
+    let mut y = 0.0;
+    let rects: Vec<Rect> = cases
+        .iter()
+        .map(|c| {
+            let r = Rect::from_min_size(pos2(0.0, y), c.window());
+            y += c.window().y;
+            r
+        })
+        .collect();
+    let w = rects.iter().map(|r| r.width()).fold(0.0, f32::max);
+    (rects, vec2(w, y))
+}
+
 struct Preview {
+    /// The board's PNG, or the folder for the README's images.
     out: PathBuf,
+    docs: bool,
     frames: u32,
     requested: bool,
 }
 
 impl eframe::App for Preview {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let cases = cases();
-        let (rects, _) = layout(&cases);
-        backdrop(ui.painter(), ui.max_rect());
+        let (cases, rects) = if self.docs {
+            let cases = docs_cases();
+            let rects = docs_layout(&cases).0;
+            (cases, rects)
+        } else {
+            let cases = cases();
+            backdrop(ui.painter(), ui.max_rect());
+            let rects = layout(&cases).0;
+            (cases, rects)
+        };
         for (i, (case, rect)) in cases.iter().zip(&rects).enumerate() {
-            ui.painter().text(
-                rect.min + vec2(MARGIN, -2.0),
-                Align2::LEFT_BOTTOM,
-                case.name,
-                theme::font(Weight::SemiBold, 11.0),
-                Color32::WHITE,
-            );
+            if !self.docs {
+                ui.painter().text(
+                    rect.min + vec2(MARGIN, -2.0),
+                    Align2::LEFT_BOTTOM,
+                    case.name,
+                    theme::font(Weight::SemiBold, 11.0),
+                    Color32::WHITE,
+                );
+            }
             let frame = CueFrame {
                 state: &case.state,
                 chrome: Chrome {
@@ -242,6 +290,14 @@ impl eframe::App for Preview {
             })
         });
         match shot {
+            Some(image) if self.docs => {
+                for (case, rect) in cases.iter().zip(&rects) {
+                    let path = self.out.join(format!("{}.png", case.name));
+                    save(&path, &image.region(rect, Some(ctx.pixels_per_point())));
+                    println!("Saved {}", path.display());
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
             Some(image) => {
                 save(&self.out, &image);
                 println!("Saved {}", self.out.display());
@@ -249,6 +305,10 @@ impl eframe::App for Preview {
             }
             None => ctx.request_repaint(),
         }
+    }
+
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0; 4]
     }
 }
 
@@ -258,17 +318,24 @@ fn save(path: &Path, image: &ColorImage) {
     let mut encoder = png::Encoder::new(file, w as u32, h as u32);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
-    let rgba: Vec<u8> = image.pixels.iter().flat_map(|c| c.to_array()).collect();
+    let rgba: Vec<u8> = image.pixels.iter().flat_map(|c| c.to_srgba_unmultiplied()).collect();
     encoder.write_header().and_then(|mut w| w.write_image_data(&rgba)).expect("write the PNG");
 }
 
 fn main() -> eframe::Result {
-    let out = std::env::args().nth(1).map_or_else(|| std::env::temp_dir().join("ito-cue-preview.png"), PathBuf::from);
-    let (_, size) = layout(&cases());
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let docs = args.first().is_some_and(|a| a == "--docs");
+    let out = match (docs, args.get(usize::from(docs))) {
+        (_, Some(path)) => PathBuf::from(path),
+        (true, None) => PathBuf::from("docs/images"),
+        (false, None) => std::env::temp_dir().join("ito-cue-preview.png"),
+    };
+    let size = if docs { docs_layout(&docs_cases()).1 } else { layout(&cases()).1 };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Brake point preview")
             .with_inner_size(size)
+            .with_transparent(docs)
             .with_resizable(false),
         renderer: eframe::Renderer::Glow,
         ..Default::default()
@@ -279,7 +346,7 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             theme::install_fonts(&cc.egui_ctx);
             cc.egui_ctx.set_pixels_per_point(1.0);
-            Ok(Box::new(Preview { out, frames: 0, requested: false }))
+            Ok(Box::new(Preview { out, docs, frames: 0, requested: false }))
         }),
     )
 }
