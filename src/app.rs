@@ -349,7 +349,12 @@ impl OverlayApp {
                 }
                 DesktopEvent::SetLocked(locked) => self.settings.locked = locked,
                 DesktopEvent::ToggleLock => self.settings.locked = !self.settings.locked,
-                DesktopEvent::ResetPosition => reset_layout(ctx, frame),
+                DesktopEvent::ResetPosition => {
+                    // Both windows: the brake point window by where the graph is going.
+                    let home = reset_layout(ctx, frame);
+                    let screen = Screen { home, ..screen(ctx, frame) };
+                    self.cue_window.reset_layout(ctx, &mut self.settings, &screen);
+                }
                 DesktopEvent::Quit => ctx.send_viewport_cmd(ViewportCommand::Close),
                 DesktopEvent::Picked(path) => {
                     self.browsing = false;
@@ -398,7 +403,9 @@ impl OverlayApp {
                 self.hotkey_error = self.desktop.set_hotkey(&spec).err();
                 self.settings.unlock_hotkey = spec;
             }
-            PanelAction::ResetLayout => reset_layout(ctx, frame),
+            PanelAction::ResetLayout => {
+                reset_layout(ctx, frame);
+            }
             PanelAction::ResetCueLayout => self.cue_window.reset_layout(ctx, &mut self.settings, &screen(ctx, frame)),
             PanelAction::ResetAll => self.settings = reset_all(&self.settings),
             PanelAction::DismissError if self.error.is_some() => self.error = None,
@@ -787,12 +794,14 @@ fn prepare_window(window: &Window, saved: Option<WindowRect>) {
 }
 
 /// Back to the default size, centred low on the monitor the overlay is on.
-fn reset_layout(ctx: &egui::Context, frame: &eframe::Frame) {
-    let Some(window) = frame.winit_window() else { return };
-    let Some(monitor) = window.current_monitor().or_else(|| window.primary_monitor()) else { return };
+/// Returns that monitor, and the graph's panel there in points.
+fn reset_layout(ctx: &egui::Context, frame: &eframe::Frame) -> Option<(geometry::Monitor, Rect)> {
+    let window = frame.winit_window()?;
+    let monitor = window.current_monitor().or_else(|| window.primary_monitor())?;
     let rect = geometry::default_window(monitor_rect(&monitor));
     ctx.send_viewport_cmd(ViewportCommand::OuterPosition(rect.min));
     ctx.send_viewport_cmd(ViewportCommand::InnerSize(rect.size()));
+    Some((physical_monitor(&monitor), overlay::panel_rect(rect)))
 }
 
 /// A monitor's area in physical pixels, and its scale.
