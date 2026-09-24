@@ -72,6 +72,24 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
   -webkit-user-select: none;
   touch-action: none;
 }
+/* Red pulse at the brake point (a try-out, on by default): a layer under the window's
+   contents flashes red for about half a second. */
+.ito-overlay::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background: rgba(214, 36, 24, 0.62);
+  opacity: 0;
+  pointer-events: none;
+}
+.ito-overlay.is-pulse::before { animation: brake-pulse 0.55s ease-out; }
+@keyframes brake-pulse {
+  12% { opacity: 1; }
+  to { opacity: 0; }
+}
+
 .ito-overlay:not(.is-locked):hover,
 .ito-overlay.is-moving,
 .ito-overlay.is-resizing {

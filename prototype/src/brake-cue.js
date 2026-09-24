@@ -150,6 +150,7 @@
         fill: 0,
         join: clamp((joinAt - armAt) / cfg.lead, 0, 1),
         zoneNo: cueIdx.indexOf(cur.k) + 1,
+        untilBrake: cueAt - A, // s to the moment BRAKE shows (negative once it has)
         zoneCount: cueIdx.length,
         dist,
         target: z.peak,

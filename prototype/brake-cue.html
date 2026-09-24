@@ -44,6 +44,8 @@
     /* Show compact mode's expand button as if the pointer were over the bar. */
     .backdrop .ito-cue.is-compact.is-hover-demo .cue-expand { display: grid; }
     .backdrop .ito-cue.is-hover-demo { outline: 1px solid rgba(46, 230, 160, 0.55); }
+    /* The red pulse, held at its peak. */
+    .backdrop .ito-overlay.is-pulse-demo::before { opacity: 1; }
     .cap-title { display: flex; align-items: baseline; gap: 8px; font-weight: 600; color: var(--ui-text); }
     .cap-title span { font: 700 10px/1 var(--font-hud); letter-spacing: 0.1em; color: var(--accent); }
     .note { margin: 0; color: var(--ui-muted); font-size: 12.5px; line-height: 1.5; }
@@ -208,6 +210,7 @@
           <tr><td>Peak</td><td>Your highest pressure in the zone against the reference peak. The difference shows once you're off the brake.</td></tr>
           <tr><td>Hold</td><td>The timing row keeps the last zone's result until the next zone is decided. The zone strip keeps one result per zone for this lap and the last.</td></tr>
           <tr><td>Sound</td><td>Optional: a short beep on each count and a long, higher one on BRAKE.</td></tr>
+          <tr><td>Pulse</td><td>A try-out, on by default: as the brake point arrives (the moment BRAKE shows, whether or not you've braked yet), both windows' backgrounds flash red for half a second, under their contents.</td></tr>
           <tr><td>Settings</td><td>This window's gear: <b>Countdown</b> (length, cue early by, skip zones below, beeps), <b>Grades</b> (good and perfect windows, grade key), <b>Window</b> (show, compact, background and contents opacity, lock, reset) and <b>Reference</b>, shared with the graph. The graph's gear keeps Display (with the brake point window on/off and lock), Labels (peak labels and the brake point marks), Timing and Reference.</td></tr>
         </tbody>
       </table>

@@ -32,6 +32,7 @@
     el.classList.add("is-locked");
     el.classList.toggle("is-compact", !!opts.compact);
     el.classList.toggle("is-hover-demo", !!opts.hover);
+    el.classList.toggle("is-pulse-demo", !!opts.pulse);
     if (opts.bg != null) el.style.setProperty("--bg-alpha", opts.bg);
     if (opts.fg != null) el.style.setProperty("--fg-alpha", opts.fg);
     el.style.width = `${w}px`;
@@ -138,6 +139,8 @@
     { tag: "Early", title: "Braked before the count ended",
       state: S({ mode: "braking", beat: 0, fill: 0.88, live: 0.52, peak: 0.52, flash: { grade: "veryEarly", alpha: 1 }, verdict: verdict("veryEarly", -0.27, -19, 0.52, 0.72, 4, { current: true }), pips: pips(["good", "late", "good", "veryEarly"]) }),
       note: "The bar stops where you braked and shows the early colour; the gap to the cap is how early." },
+    { tag: "Try-out", title: "Red pulse on BRAKE", state: S({ mode: "brake", beat: 0, fill: 1, dist: 0 }), opts: { pulse: true },
+      note: "As the brake point arrives, both windows' backgrounds (this one and the graph) flash red for half a second, under their contents. Shown at its peak; a switch in Countdown turns it off." },
     { tag: "Late", title: "Past the brake point, not braking yet",
       state: S({ mode: "brake", beat: 0, fill: 1, dist: -8, verdict: verdict("late", 0.13, 9, null, 0.72, 4, { pending: true, current: true }) }),
       note: "The bar stays solid red and the outlined grade counts up until you brake." },

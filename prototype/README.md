@@ -23,7 +23,9 @@ serve the folder (`python -m http.server 8617`) and visit `http://localhost:8617
   reference lap's brake points, with a bar filling in step and the zone's target peak
   pressure beside it. The bar fills in red that darkens toward the brake point, goes solid
   red with a slight glow at it, and on your brake-on shows your grade's colour for a moment
-  before emptying (for Perfect, the whole bar and the cap light purple). It grades your
+  before emptying (for Perfect, the whole bar and the cap light purple); as the brake point
+  arrives, both windows' backgrounds pulse red for half a second (a try-out, with a switch
+  to turn it off). It grades your
   timing against the reference brake point (very early, early, good, perfect, late, very
   late, or no brake) in seconds and metres, and
   keeps a strip of pips with your grade in every zone. With **Brake points on the graph**

@@ -22,6 +22,7 @@
     cueEarly: 0, // s: show BRAKE this much before the reference brake point
     cueMin: 15, // %: zones with a lower reference peak get no countdown
     cueBeep: false,
+    cuePulse: true, // both windows' backgrounds pulse red at the brake point
     cueTol: 0.08, // s: ± "good" window; "very" early/late past 3×
     cuePerfect: 0.03, // s: ± "perfect" window, inside the good one
     cueGraph: true,
@@ -254,9 +255,20 @@
     const v = settings.v;
     return { lead: v.cueLead, early: v.cueEarly, min: v.cueMin / 100, tol: v.cueTol, perfect: Math.min(v.cuePerfect, v.cueTol) };
   };
+  // Restart the red pulse on both windows (removing and re-adding the class restarts
+  // the animation).
+  function pulse() {
+    for (const el of [overlay, cueEl]) {
+      el.classList.remove("is-pulse");
+      void el.offsetWidth;
+      el.classList.add("is-pulse");
+    }
+  }
   function updateCue() {
     const prev = cueState;
     cueState = cue.update(live.last, live, cueCfg());
+    // As the brake point arrives, whether or not you've braked already.
+    if (settings.v.cuePulse && prev && prev.zoneNo === cueState.zoneNo && prev.untilBrake > 0 && cueState.untilBrake <= 0) pulse();
     if (settings.v.cueOn) {
       cueView.render(cueState);
       if (settings.v.cueBeep) beeper.cue(prev, cueState);
