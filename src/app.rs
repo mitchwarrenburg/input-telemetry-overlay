@@ -608,7 +608,7 @@ impl OverlayApp {
     /// Runs the brake point countdown, then shows its window when it's on.
     fn brake_point(&mut self, ctx: &egui::Context, frame: &eframe::Frame, now: Instant) {
         let lap = cue_reference(&self.reference, self.session.as_ref());
-        let (car, live, length) = (self.feed.now(), self.feed.trace(), self.feed.track_length());
+        let (car, live, length) = (self.feed.driving(), self.feed.trace(), self.feed.track_length());
         self.cue_window.update(car, live, lap, length, &self.settings, now);
         if !self.settings.cue_on {
             self.cue_window.hide();

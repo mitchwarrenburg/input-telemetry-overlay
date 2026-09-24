@@ -23,6 +23,8 @@ pub struct LiveFeed {
     tracker: DistanceTracker,
     track_length: f64,
     now: Option<CarNow>,
+    /// The last frame had the car on track (not in the garage or a replay).
+    on_track: bool,
 }
 
 impl Default for LiveFeed {
@@ -32,6 +34,7 @@ impl Default for LiveFeed {
             tracker: DistanceTracker::new(),
             track_length: FALLBACK_TRACK_LENGTH_M,
             now: None,
+            on_track: false,
         }
     }
 }
@@ -43,6 +46,12 @@ impl LiveFeed {
 
     pub fn now(&self) -> Option<CarNow> {
         self.now
+    }
+
+    /// Where the car is while it's on track; `None` in the garage, where `now` keeps the
+    /// last spot for the graph.
+    pub fn driving(&self) -> Option<CarNow> {
+        self.now.filter(|_| self.on_track)
     }
 
     /// Metres per lap used for the trace's distances.
@@ -66,6 +75,7 @@ impl LiveFeed {
     }
 
     pub fn push(&mut self, f: &TelemetryFrame) {
+        self.on_track = f.on_track;
         if !f.on_track {
             self.tracker.gap();
             return;
@@ -170,11 +180,14 @@ mod tests {
         feed.push(&frame(1.0 + 2.0 / 60.0, 0.60, 0.0)); // tow
         assert_eq!(feed.trace().len(), 1);
 
+        assert!(feed.driving().is_some());
         feed.push(&TelemetryFrame { on_track: false, ..frame(2.0, -1.0, 0.0) });
         assert_eq!(feed.trace().len(), 1, "off-track frames are skipped");
+        assert!(feed.now().is_some() && feed.driving().is_none(), "the graph keeps the last spot; no countdown");
         feed.push(&frame(30.0, 0.20, 0.0));
         assert_eq!(feed.trace().len(), 1, "back on track starts over");
         assert!((feed.now().unwrap().lap_pos - 0.20).abs() < 1e-12);
+        assert_eq!(feed.driving(), feed.now());
     }
 
     #[test]

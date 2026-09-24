@@ -291,13 +291,16 @@ pub struct BrakeCue {
     /// Reference clock when grading started: zones before it aren't "no brake".
     start: Option<f64>,
     last_clock: f64,
+    /// Session time last update: it only goes back in a new trace (a new session, the
+    /// demo restarting), whose brake-ons would otherwise count as already seen.
+    last_t: f64,
     /// The lap and track length the results are for.
     key: Option<(usize, u64, u64)>,
 }
 
 impl BrakeCue {
     pub fn new() -> Self {
-        Self { seen_to: f64::NEG_INFINITY, ..Self::default() }
+        Self { seen_to: f64::NEG_INFINITY, last_t: f64::NEG_INFINITY, ..Self::default() }
     }
 
     /// Forgets every grade (a new trace or reference).
@@ -333,11 +336,12 @@ impl BrakeCue {
         }
         let clock = Clock { lap };
         let a = clock.at(now.lap_pos);
-        if a < self.last_clock - BACKWARDS_S {
+        if a < self.last_clock - BACKWARDS_S || now.t < self.last_t {
             self.reset();
             self.key = Some(key);
         }
         self.last_clock = a;
+        self.last_t = now.t;
         let start = *self.start.get_or_insert(a);
 
         self.grade_new_brake_ons(live, &clock, &cue_zones, track_length);
@@ -760,6 +764,36 @@ mod tests {
         );
         assert!(d.cue.results.is_empty());
         assert_eq!(state.verdict, None);
+    }
+
+    #[test]
+    fn a_new_trace_forgets_the_grades_and_grades_its_own() {
+        let mut d = Drive::new(0);
+        d.run(40.0);
+        assert!(!d.cue.results.is_empty());
+        // The demo restarting, or a new session: session time starts over, the car
+        // further round the lap.
+        let (live, n) = (&mut d.live, d.lap.n());
+        live.clear();
+        let restart = d.i;
+        d.i = restart + n / 4;
+        let t0 = d.i as f64 / d.lap.hz;
+        let at = |i: usize| (i as f64 / d.lap.hz - t0 + 1.0, (i / n) as f64 + d.lap.pct[i % n]);
+        let (t, lap_pos) = at(d.i);
+        d.cue.update(Some(CuePosition { t, lap_pos, brake: 0.0 }), &d.live, Some(&d.lap), L, &d.cfg);
+        assert!(d.cue.results.is_empty(), "forgotten");
+        // Its brake-ons are graded although their times are earlier than the old ones.
+        let mut graded = false;
+        for _ in 0..(40.0 * d.lap.hz) as usize {
+            d.i += 1;
+            let (t, lap_pos) = at(d.i);
+            let j = d.i % n;
+            d.live.push(LiveSample { t, d: lap_pos * L, brake: d.lap.brake[j], throttle: 0.0 });
+            let s =
+                d.cue.update(Some(CuePosition { t, lap_pos, brake: d.lap.brake[j] }), &d.live, Some(&d.lap), L, &d.cfg);
+            graded |= s.verdict.is_some_and(|v| !v.pending && v.dt.is_some());
+        }
+        assert!(graded);
     }
 
     #[test]
