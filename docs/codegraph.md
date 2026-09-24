@@ -39,6 +39,11 @@ The last command reads changed source paths, one per line, from stdin; for examp
 pipe `git diff --name-only <base> <head>` into it. Use `codegraph impact <symbol>`
 for a symbol's dependents and `codegraph index` to rebuild the index.
 
+On Windows, a running project daemon can lock the database during a rebuild.
+Close that project's MCP session, run `codegraph daemon`, select that project
+and stop its daemon, then retry `codegraph index`. Restart the agent afterward
+for live watching. Use `codegraph sync` for ordinary updates with the server running.
+
 MCP watches source edits and catches up on connection. Run `codegraph sync` before
 scripted CLI queries. Before handing off a review, stop the writer, rebuild with
 `codegraph index`, record `git rev-parse HEAD`, the review base and `codegraph status`,
