@@ -177,6 +177,14 @@ cargo run --example iracing_probe    # prints what the telemetry reader sees
 `cargo run --example settings_preview` render the graph, the brake point window and the
 settings panel on their own.
 
+### Releases
+
+Every push to `main` (a merged pull request, or a direct push) that passes CI is released
+automatically: the Windows zip is built and published on [Releases](../../releases) as the
+next patch version, with notes on what changed since the last one. For a minor or major
+release, raise the version in `Cargo.toml` first. A `vX.Y.Z` tag pushed by hand is
+released too.
+
 ### How it's put together
 
 | Path | What |
