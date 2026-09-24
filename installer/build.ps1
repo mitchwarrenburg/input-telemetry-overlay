@@ -11,17 +11,22 @@ if (-not $Version) {
     $Version = (Select-String -Path (Join-Path $root "Cargo.toml") -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
 }
 
-# ISCC.exe of Inno Setup 6.3 or newer, if there is one.
+# ISCC.exe of Inno Setup 6.3 or newer, if there is one: on the PATH or where its installer
+# puts it (any major version's folder).
 function Find-Iscc {
-    $candidates = @((Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source) +
-        (${env:ProgramFiles(x86)}, $env:ProgramFiles, (Join-Path $env:LOCALAPPDATA "Programs") |
-            ForEach-Object { Join-Path $_ "Inno Setup 6\ISCC.exe" })
-    foreach ($iscc in $candidates | Where-Object { $_ -and (Test-Path $_) }) {
-        try {
-            if ([version](Get-Item $iscc).VersionInfo.FileVersion -ge [version]"6.3") { return $iscc }
-        } catch {
-            # A version it doesn't state plainly: try the next.
+    $onPath = @(Get-Command ISCC.exe -ErrorAction SilentlyContinue | ForEach-Object Source)
+    $installed = foreach ($base in ${env:ProgramFiles(x86)}, $env:ProgramFiles, (Join-Path $env:LOCALAPPDATA "Programs")) {
+        if ($base -and (Test-Path -LiteralPath $base)) {
+            Get-ChildItem -LiteralPath $base -Directory -Filter "Inno Setup *" |
+                ForEach-Object { Join-Path $_.FullName "ISCC.exe" } |
+                Where-Object { Test-Path -LiteralPath $_ }
         }
+    }
+    foreach ($iscc in $onPath + @($installed)) {
+        # The numeric version: the text one can carry a suffix.
+        $v = (Get-Item -LiteralPath $iscc).VersionInfo
+        if ($v.FileMajorPart -gt 6 -or ($v.FileMajorPart -eq 6 -and $v.FileMinorPart -ge 3)) { return $iscc }
+        Write-Host "Not using $iscc, version $($v.FileMajorPart).$($v.FileMinorPart): 6.3 or newer is needed"
     }
 }
 
@@ -33,6 +38,7 @@ if (-not $iscc -and $env:GITHUB_ACTIONS) {
 if (-not $iscc) {
     throw "Inno Setup 6.3 or newer isn't installed. Install it with: winget install JRSoftware.InnoSetup"
 }
+Write-Host "Building the $Version installer with $iscc"
 
 & $iscc "/DVersion=$Version" "/O$(Join-Path $root 'target\installer')" (Join-Path $PSScriptRoot "input-telemetry-overlay.iss")
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed (exit code $LASTEXITCODE)" }
