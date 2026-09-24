@@ -3,6 +3,7 @@
 #![cfg(windows)]
 
 mod capture;
+mod cue_window;
 mod geometry;
 mod live;
 mod reference;
@@ -25,10 +26,11 @@ use crate::telemetry::iracing::IracingReader;
 use crate::telemetry::{SessionInfo, TelemetryEvent};
 use crate::ui::graph::{self, GraphScene, LabelOptions};
 use crate::ui::overlay::{self, Chrome, HEADER_HEIGHT, Intent};
-use crate::ui::settings_panel::{self, ConnectionState, PanelAction, PanelContext, PanelOutput};
+use crate::ui::settings_panel::{self, ConnectionState, Owner, PanelAction, PanelContext, PanelOutput};
 use crate::ui::theme;
 
 use capture::Screenshots;
+use cue_window::{CueWindow, Screen};
 use live::{Demo, LiveFeed};
 use reference::Reference;
 
@@ -52,8 +54,10 @@ pub struct LaunchOptions {
     pub open_settings: Option<SettingsTab>,
     /// Save a PNG of the overlay window here after it has rendered, then…
     pub screenshot: Option<PathBuf>,
-    /// …a PNG of the settings window here (requires `open_settings`), then exit.
+    /// …a PNG of the settings window here (requires `open_settings`), then…
     pub settings_screenshot: Option<PathBuf>,
+    /// …a PNG of the brake point window here, then exit.
+    pub cue_screenshot: Option<PathBuf>,
     /// Use this folder instead of %APPDATA%\input-telemetry-overlay.
     pub data_dir: Option<PathBuf>,
     /// Garage 61 CSVs to add to the library at start (a CSV dropped on the exe, or
@@ -133,6 +137,8 @@ pub struct OverlayApp {
     /// Why the unlock shortcut couldn't be registered.
     hotkey_error: Option<String>,
     settings_open: bool,
+    /// Whose settings are open: the graph's or the brake point window's.
+    settings_owner: Owner,
     /// `settings_open` as of the last frame: the panel forgets half-done things
     /// (a shortcut being picked, a pending "Remove?") when the window opens or closes.
     settings_was_open: bool,
@@ -143,6 +149,7 @@ pub struct OverlayApp {
     last_window_size: Option<Vec2>,
     readout_until: Option<Instant>,
     screenshots: Option<Screenshots>,
+    cue_window: CueWindow,
 }
 
 impl OverlayApp {
@@ -168,6 +175,7 @@ impl OverlayApp {
         let reader = (!opts.demo).then(|| spawn_reader(ctx, settings.update_hz));
         let paths = Paths::new(&opts.data_dir());
         let (library, library_warning) = Library::load_with_warning(&paths.library);
+        let cue_window = CueWindow::new(&settings, Instant::now());
         let mut app = Self {
             library,
             paths,
@@ -189,15 +197,18 @@ impl OverlayApp {
             library_warning,
             hotkey_error,
             settings_open: opts.open_settings.is_some() || opts.settings_screenshot.is_some(),
+            settings_owner: Owner::Graph,
             settings_was_open: false,
             settings_height: 400.0,
             browsing: false,
             last_window_size: None,
             readout_until: None,
-            screenshots: Screenshots::new(opts.screenshot, opts.settings_screenshot),
+            screenshots: Screenshots::new(opts.screenshot, opts.settings_screenshot, opts.cue_screenshot),
+            cue_window,
         };
         if let Some(tab) = opts.open_settings {
-            app.settings.tab = tab;
+            app.settings_owner = if tab.is_cue() { Owner::Cue } else { Owner::Graph };
+            *app.settings_owner.tab(&mut app.settings) = tab;
         }
         if app.settings.locked && !app.desktop.can_unlock() {
             log::warn!("No tray icon or hotkey to unlock with: starting unlocked");
@@ -314,8 +325,15 @@ impl OverlayApp {
             }
             Err(e) => self.error = Some(e.to_string()),
         }
-        self.settings.tab = SettingsTab::Reference;
+        *self.settings_owner.tab(&mut self.settings) = SettingsTab::Reference;
         self.settings_open = true;
+    }
+
+    /// Opens or closes `owner`'s settings; with the other window's open, switches to
+    /// `owner`'s.
+    fn toggle_settings(&mut self, owner: Owner) {
+        self.settings_open = !(self.settings_open && self.settings_owner == owner);
+        self.settings_owner = owner;
     }
 
     fn handle_desktop_events(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
@@ -378,6 +396,7 @@ impl OverlayApp {
                 self.settings.unlock_hotkey = spec;
             }
             PanelAction::ResetLayout => reset_layout(ctx, frame),
+            PanelAction::ResetCueLayout => self.cue_window.reset_layout(ctx, &mut self.settings, &screen(ctx, frame)),
             PanelAction::ResetAll => self.settings = reset_all(&self.settings),
             PanelAction::DismissError if self.error.is_some() => self.error = None,
             PanelAction::DismissError if self.load_error.is_some() => self.load_error = None,
@@ -461,11 +480,12 @@ impl OverlayApp {
         let chrome = Chrome {
             opacity: self.settings.bg_opacity / 100.0,
             locked: self.settings.locked,
-            settings_open: self.settings_open,
+            settings_open: self.settings_open && self.settings_owner == Owner::Graph,
             reference_time: lap_time.as_deref(),
             badges: &badges,
             file_hover: ui.input(|i| !i.raw.hovered_files.is_empty()),
             resizing: self.readout_until.is_some_and(|until| now < until),
+            pulse: self.cue_window.pulse(now),
         };
         let header = overlay::panel_and_header(ui, window, &chrome);
 
@@ -510,7 +530,7 @@ impl OverlayApp {
         let window = frame.winit_window();
         let started = match intent {
             Intent::ToggleSettings => {
-                self.settings_open = !self.settings_open;
+                self.toggle_settings(Owner::Graph);
                 return;
             }
             Intent::Close => {
@@ -530,7 +550,7 @@ impl OverlayApp {
         let max_height = monitor.map_or(f32::INFINITY, |m| m.height() - 16.0);
         let size = vec2(settings_panel::WIDTH, self.settings_height.min(max_height));
         let mut builder = ViewportBuilder::default()
-            .with_title("Overlay settings")
+            .with_title(self.settings_owner.title())
             .with_decorations(false)
             .with_transparent(true)
             .with_always_on_top()
@@ -538,9 +558,13 @@ impl OverlayApp {
             .with_resizable(false)
             .with_drag_and_drop(true)
             .with_inner_size(size);
-        let overlay_panel = ctx.input(|i| i.viewport().outer_rect).map(overlay::panel_rect);
-        if let (Some(panel), Some(monitor)) = (overlay_panel, monitor) {
-            builder = builder.with_position(geometry::settings_position(panel, size, monitor));
+        // Beside the window whose settings these are.
+        let owner_panel = match self.settings_owner {
+            Owner::Graph => ctx.input(|i| i.viewport().outer_rect),
+            Owner::Cue => self.cue_window.rect_px().zip(monitor_scale(frame)).map(|(r, s)| r / s),
+        };
+        if let (Some(window), Some(monitor)) = (owner_panel, monitor) {
+            builder = builder.with_position(geometry::settings_position(overlay::panel_rect(window), size, monitor));
         }
 
         let connection = self.connection();
@@ -556,6 +580,7 @@ impl OverlayApp {
                 browsing: self.browsing,
                 file_hover: false, // `settings_ui` reads it from the window's input.
                 max_height,
+                owner: self.settings_owner,
             };
             settings_ui(ui, &mut self.settings, cx)
         });
@@ -572,10 +597,27 @@ impl OverlayApp {
         }
     }
 
-    /// `--screenshot` / `--settings-screenshot`: quits once they're saved.
+    /// Runs the brake point countdown, then shows its window when it's on.
+    fn brake_point(&mut self, ctx: &egui::Context, frame: &eframe::Frame, now: Instant) {
+        let lap = cue_reference(&self.reference, self.session.as_ref());
+        let (car, live, length) = (self.feed.now(), self.feed.trace(), self.feed.track_length());
+        self.cue_window.update(car, live, lap, length, &self.settings, now);
+        if !self.settings.cue_on {
+            self.cue_window.hide();
+            return;
+        }
+        let open = self.settings_open && self.settings_owner == Owner::Cue;
+        if self.cue_window.show(ctx, &mut self.settings, open, || screen(ctx, frame), now) {
+            self.toggle_settings(Owner::Cue);
+        }
+    }
+
+    /// `--screenshot` / `--settings-screenshot` / `--cue-screenshot`: quits once
+    /// they're saved.
     fn take_screenshots(&mut self, ctx: &egui::Context) {
         let Some(mut shots) = self.screenshots.take() else { return };
-        if shots.update(ctx, self.settings_rect_px(ctx)) {
+        let cue = self.settings.cue_on.then(|| self.cue_window.rect_px()).flatten();
+        if shots.update(ctx, self.settings_rect_px(ctx), cue) {
             ctx.send_viewport_cmd(ViewportCommand::Close);
         } else {
             self.screenshots = Some(shots);
@@ -612,6 +654,7 @@ impl eframe::App for OverlayApp {
         let ctx = ui.ctx().clone();
         let now = Instant::now();
         self.track_window(&ctx, frame, now);
+        self.brake_point(&ctx, frame, now);
         if let Some(intent) = self.paint_overlay(ui, ui.max_rect(), now) {
             self.on_intent(intent, &ctx, frame);
         }
@@ -758,14 +801,38 @@ fn monitor_rect(monitor: &MonitorHandle) -> Rect {
     Rect::from_min_size(pos2(pos.x as f32, pos.y as f32) / scale, vec2(size.width as f32, size.height as f32) / scale)
 }
 
-/// Defaults, except the window, the hotkey and the open tab.
+/// Defaults, except the windows' places, the hotkey and the open tabs.
 fn reset_all(settings: &Settings) -> Settings {
     Settings {
         window: settings.window,
+        cue_window: settings.cue_window,
+        cue_compact_window: settings.cue_compact_window,
         unlock_hotkey: settings.unlock_hotkey.clone(),
         tab: settings.tab,
+        cue_tab: settings.cue_tab,
         ..Settings::default()
     }
+}
+
+/// The reference the countdown runs on: the graph's, even while the graph hides it,
+/// unless it's for another track or layout.
+fn cue_reference<'a>(reference: &'a Reference, session: Option<&SessionInfo>) -> Option<&'a Lap> {
+    let status = reference.status(session)?;
+    reference.lap().filter(|_| reference::visibility(status).0).map(Arc::as_ref)
+}
+
+/// The overlay's monitor's pixels per point.
+fn monitor_scale(frame: &eframe::Frame) -> Option<f32> {
+    frame.winit_window().and_then(|w| w.current_monitor()).map(|m| m.scale_factor() as f32)
+}
+
+/// The monitors, and the graph's panel on its own, for placing the brake point window.
+fn screen(ctx: &egui::Context, frame: &eframe::Frame) -> Screen {
+    let Some(window) = frame.winit_window() else { return Screen { monitors: Vec::new(), home: None } };
+    let monitors = window.available_monitors().map(|m| physical_monitor(&m)).collect();
+    let panel = ctx.input(|i| i.viewport().outer_rect).map(overlay::panel_rect);
+    let home = window.current_monitor().map(|m| physical_monitor(&m)).zip(panel);
+    Screen { monitors, home }
 }
 
 fn spawn_reader(ctx: &egui::Context, update_hz: u32) -> IracingReader {
@@ -868,6 +935,7 @@ mod tests {
                 browsing: false,
                 file_hover: false,
                 max_height: f32::INFINITY,
+                owner: Default::default(),
             }
         }
 

@@ -34,9 +34,11 @@ running for the same data folder, it takes them instead.
 
 Options:
   --demo                       Drive the simulated car, even if iRacing is running
-  --settings <tab>             Open the settings on a tab: display, labels, timing, reference
+  --settings <tab>             Open the settings on a tab: display, labels, timing, reference,
+                               or the brake point window's countdown, grades, window
   --screenshot <png>           Save the overlay as a PNG after a second, then quit
   --settings-screenshot <png>  Save the settings window as a PNG too (opens it), then quit
+  --cue-screenshot <png>       Save the brake point window as a PNG too, then quit
   --data-dir <dir>             Keep settings and laps here instead of %APPDATA%\\input-telemetry-overlay
   -h, --help                   Show this help";
 
@@ -135,6 +137,7 @@ Options:
                 Some("--settings") => opts.open_settings = Some(parse_tab(&value()?)?),
                 Some("--screenshot") => opts.screenshot = Some(value()?.into()),
                 Some("--settings-screenshot") => opts.settings_screenshot = Some(value()?.into()),
+                Some("--cue-screenshot") => opts.cue_screenshot = Some(value()?.into()),
                 Some("--data-dir") => opts.data_dir = Some(value()?.into()),
                 _ if shown.starts_with('-') => return Err(format!("Unknown option: {shown}")),
                 _ => opts.import.push(arg.into()),
@@ -149,6 +152,9 @@ Options:
             Some("labels") => Ok(SettingsTab::Labels),
             Some("timing") => Ok(SettingsTab::Timing),
             Some("reference") => Ok(SettingsTab::Reference),
+            Some("countdown") => Ok(SettingsTab::Countdown),
+            Some("grades") => Ok(SettingsTab::Grades),
+            Some("window") => Ok(SettingsTab::Window),
             _ => Err(format!("No settings tab called “{}”", name.to_string_lossy())),
         }
     }

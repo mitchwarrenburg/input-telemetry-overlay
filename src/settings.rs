@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::cue::CueConfig;
+
 pub const APP_DIR_NAME: &str = "input-telemetry-overlay";
 
 /// `%APPDATA%\input-telemetry-overlay` (or the platform equivalent).
@@ -30,10 +32,23 @@ pub enum Axis {
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum SettingsTab {
+    // The graph's
     Display,
     Labels,
     Timing,
+    // The brake point window's
+    Countdown,
+    Grades,
+    Window,
+    // Both
     Reference,
+}
+
+impl SettingsTab {
+    /// The brake point window's tabs (the rest are the graph's; Reference is both's).
+    pub fn is_cue(self) -> bool {
+        matches!(self, SettingsTab::Countdown | SettingsTab::Grades | SettingsTab::Window)
+    }
 }
 
 /// Overlay window position and size. The position is the window's outer top-left in
@@ -83,10 +98,41 @@ pub struct Settings {
     pub demo_when_idle: bool,
     /// Global shortcut that locks/unlocks the overlay (it's click-through while locked).
     pub unlock_hotkey: String,
-    /// Last settings tab shown.
+    /// Last settings tab shown from the graph's gear.
     pub tab: SettingsTab,
     /// Last overlay position and size.
     pub window: Option<WindowRect>,
+
+    // ---- Brake point window ----
+    /// The countdown window is shown.
+    pub cue_on: bool,
+    /// Just the bar, with the target, your pressure and the distance in it.
+    pub cue_compact: bool,
+    /// Its background opacity, percent.
+    pub cue_bg_opacity: f32,
+    /// Opacity of what's drawn on it (bar, text, header), percent.
+    pub cue_fg_opacity: f32,
+    /// Seconds for the three counts.
+    pub cue_lead: f32,
+    /// Show BRAKE this many seconds before the reference brake point.
+    pub cue_early: f32,
+    /// Zones whose reference peak is below this percentage get no countdown.
+    pub cue_min: f32,
+    /// A beep on each count and a long one on BRAKE.
+    pub cue_beep: bool,
+    /// Both windows' backgrounds pulse red at the brake point.
+    pub cue_pulse: bool,
+    /// ± seconds of the good window.
+    pub cue_tol: f32,
+    /// ± seconds of the perfect window.
+    pub cue_perfect: f32,
+    /// Brake point marks and your gap to them on the graph.
+    pub cue_graph: bool,
+    /// Last settings tab shown from the brake point window's gear.
+    pub cue_tab: SettingsTab,
+    /// Last position and size of the window, full and compact.
+    pub cue_window: Option<WindowRect>,
+    pub cue_compact_window: Option<WindowRect>,
 }
 
 impl Default for Settings {
@@ -110,6 +156,21 @@ impl Default for Settings {
             unlock_hotkey: "Ctrl+Alt+Shift+O".into(),
             tab: SettingsTab::Display,
             window: None,
+            cue_on: true,
+            cue_compact: false,
+            cue_bg_opacity: 80.0,
+            cue_fg_opacity: 100.0,
+            cue_lead: 3.0,
+            cue_early: 0.0,
+            cue_min: 15.0,
+            cue_beep: false,
+            cue_pulse: true,
+            cue_tol: 0.08,
+            cue_perfect: 0.03,
+            cue_graph: true,
+            cue_tab: SettingsTab::Countdown,
+            cue_window: None,
+            cue_compact_window: None,
         }
     }
 }
@@ -147,15 +208,42 @@ impl Settings {
         if self.unlock_hotkey.trim().is_empty() {
             self.unlock_hotkey = d.unlock_hotkey.clone();
         }
+        self.cue_bg_opacity = c(self.cue_bg_opacity, 0.0, 100.0, d.cue_bg_opacity);
+        self.cue_fg_opacity = c(self.cue_fg_opacity, 30.0, 100.0, d.cue_fg_opacity);
+        self.cue_lead = c(self.cue_lead, 1.5, 4.5, d.cue_lead);
+        self.cue_early = c(self.cue_early, 0.0, 0.3, d.cue_early);
+        self.cue_min = c(self.cue_min, 0.0, 50.0, d.cue_min);
+        self.cue_tol = c(self.cue_tol, 0.02, 0.2, d.cue_tol);
+        self.cue_perfect = c(self.cue_perfect, 0.01, 0.06, d.cue_perfect);
         if self.update_hz != 30 {
             self.update_hz = 60;
         }
-        if let Some(w) = self.window
-            && (![w.x, w.y, w.w, w.h].iter().all(|v| v.is_finite()) || w.w < 1.0 || w.h < 1.0)
-        {
-            self.window = None;
+        // Each window's gear shows its own tabs.
+        if self.tab.is_cue() {
+            self.tab = SettingsTab::Display;
+        }
+        if !self.cue_tab.is_cue() && self.cue_tab != SettingsTab::Reference {
+            self.cue_tab = SettingsTab::Countdown;
+        }
+        for w in [&mut self.window, &mut self.cue_window, &mut self.cue_compact_window] {
+            if let Some(r) = *w
+                && (![r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()) || r.w < 1.0 || r.h < 1.0)
+            {
+                *w = None;
+            }
         }
         self
+    }
+
+    /// The countdown's settings in the model's units.
+    pub fn cue_config(&self) -> CueConfig {
+        CueConfig {
+            lead: f64::from(self.cue_lead),
+            early: f64::from(self.cue_early),
+            min_peak: self.cue_min / 100.0,
+            tol: f64::from(self.cue_tol),
+            perfect: f64::from(self.cue_perfect.min(self.cue_tol)),
+        }
     }
 
     /// (behind, ahead) of the car in the current axis' units (metres or seconds).

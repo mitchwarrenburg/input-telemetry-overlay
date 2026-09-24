@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use eframe::egui::{
-    self, Color32, CornerRadius, CursorIcon, Galley, Id, Painter, PointerButton, Pos2, Rect, ResizeDirection, Sense,
+    self, Color32, CornerRadius, CursorIcon, Galley, Painter, PointerButton, Pos2, Rect, ResizeDirection, Sense,
     Shadow, Shape, Stroke, StrokeKind, Ui, Vec2, emath::Rot2, pos2, text::LayoutJob, text::TextFormat, vec2,
 };
 
@@ -18,28 +18,28 @@ pub const HEADER_HEIGHT: f32 = 26.0;
 /// ("REF: OTHER LAYOUT"), the gear and the close button.
 pub const MIN_PANEL: Vec2 = vec2(272.0, 90.0);
 
-const RADIUS: u8 = 8;
+pub(crate) const RADIUS: u8 = 8;
 const BORDER_W: f32 = 1.0;
 /// Content this wide or narrower gets the short title.
 const SHORT_TITLE_MAX_W: f32 = 330.0;
 /// Content this wide or narrower has no legend.
 const NO_LEGEND_MAX_W: f32 = 540.0;
-const PAD_LEFT: f32 = 11.0;
+pub(crate) const PAD_LEFT: f32 = 11.0;
 const PAD_RIGHT: f32 = 5.0;
 /// Gap between the title and the legend.
 const ITEM_GAP: f32 = 14.0;
 /// The gear and close buttons, square.
-const GEAR_SIZE: f32 = 22.0;
+pub(crate) const GEAR_SIZE: f32 = 22.0;
 const GEAR_ICON: f32 = 16.0;
 /// Space between the gear and the close button.
-const BUTTON_GAP: f32 = 2.0;
+pub(crate) const BUTTON_GAP: f32 = 2.0;
 /// Half the width of the close button's ×.
 const CLOSE_ARM: f32 = 4.0;
 /// The gear turns by half a tooth while the settings window is open.
 const GEAR_OPEN_TURN: f32 = 67.5;
 /// Header items are padded by this much when handed to the graph as obstacles.
 const OBSTACLE_PAD: f32 = 2.0;
-const FADE_S: f32 = 0.12;
+pub(crate) const FADE_S: f32 = 0.12;
 /// Resize anchor fill (the prototype's `#0b1110`).
 const ANCHOR_FILL: Color32 = Color32::from_rgb(0x0b, 0x11, 0x10);
 
@@ -97,6 +97,8 @@ pub struct Chrome<'a> {
     pub file_hover: bool,
     /// The window is being (or was just) resized: show the size readout.
     pub resizing: bool,
+    /// The brake point pulse over the background, 0..1.
+    pub pulse: f32,
 }
 
 /// Something the user started this frame.
@@ -128,13 +130,13 @@ pub fn content_rect(window: Rect) -> Rect {
 }
 
 /// The header strip at the top of the content.
-fn header_rect(window: Rect) -> Rect {
+pub(crate) fn header_rect(window: Rect) -> Rect {
     let content = content_rect(window);
     Rect::from_min_size(content.min, vec2(content.width(), HEADER_HEIGHT))
 }
 
 /// The close button, at the header's right end; the gear sits just left of it.
-fn close_rect(header: Rect) -> Rect {
+pub(crate) fn close_rect(header: Rect) -> Rect {
     Rect::from_center_size(
         pos2(header.right() - PAD_RIGHT - GEAR_SIZE / 2.0, header.center().y),
         Vec2::splat(GEAR_SIZE),
@@ -145,33 +147,35 @@ fn close_rect(header: Rect) -> Rect {
 /// and the close button. Call before painting the graph.
 pub fn panel_and_header(ui: &Ui, window: Rect, chrome: &Chrome) -> Header {
     let painter = ui.painter();
-    paint_panel(painter, window, chrome.opacity);
+    paint_panel(painter, window, chrome.opacity, chrome.pulse);
 
     let content = content_rect(window);
     let header = header_rect(window);
-    let layout = HeaderLayout::new(painter, header, chrome);
+    let fade = 1.0 - chrome.opacity;
+    let layout = HeaderLayout::new(painter, header, chrome, theme::muted(fade));
 
     let hover = hover_fade(ui, window, chrome);
     if hover > 0.0 {
         paint_grip(painter, content, hover);
     }
-    layout.paint(painter);
+    layout.paint(painter, fade);
 
     let mut intent = None;
     if !chrome.locked {
         // Stop short of the gear, or pressing it would start a move instead of a click.
         let drag_area = header.with_max_x(layout.gear.min.x - 4.0);
-        let drag = ui.interact(drag_area, Id::new("ito-header"), Sense::drag()).on_hover_cursor(CursorIcon::Grab);
+        let drag = ui.interact(drag_area, ui.id().with("ito-header"), Sense::drag()).on_hover_cursor(CursorIcon::Grab);
         if drag.drag_started_by(PointerButton::Primary) {
             intent = Some(Intent::Move);
         }
     }
-    let gear = ui.interact(layout.gear, Id::new("ito-gear"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
+    let gear =
+        ui.interact(layout.gear, ui.id().with("ito-gear"), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
     if gear.clicked() {
         intent = Some(Intent::ToggleSettings);
     }
     let turn = ui.ctx().animate_bool_with_time_and_easing(
-        Id::new("ito-gear-turn"),
+        ui.id().with("ito-gear-turn"),
         chrome.settings_open,
         0.3,
         egui::emath::easing::cubic_out,
@@ -179,7 +183,7 @@ pub fn panel_and_header(ui: &Ui, window: Rect, chrome: &Chrome) -> Header {
     paint_gear(painter, layout.gear, gear.hovered(), chrome.settings_open, turn);
 
     let close = ui
-        .interact(layout.close, Id::new("ito-close"), Sense::click())
+        .interact(layout.close, ui.id().with("ito-close"), Sense::click())
         .on_hover_cursor(CursorIcon::PointingHand)
         .on_hover_text("Close the overlay");
     if close.clicked() {
@@ -201,7 +205,7 @@ pub fn frame_controls(ui: &Ui, window: Rect, chrome: &Chrome) -> Option<Intent> 
         painter.rect_stroke(panel, CornerRadius::same(RADIUS), Stroke::new(1.0, outline), StrokeKind::Outside);
     }
 
-    let drop = ui.ctx().animate_bool_with_time(Id::new("ito-drop"), chrome.file_hover, FADE_S);
+    let drop = ui.ctx().animate_bool_with_time(ui.id().with("ito-drop"), chrome.file_hover, FADE_S);
     if drop > 0.0 {
         paint_drop_hint(painter, content_rect(window).shrink(5.0), drop);
     }
@@ -210,7 +214,8 @@ pub fn frame_controls(ui: &Ui, window: Rect, chrome: &Chrome) -> Option<Intent> 
     if !chrome.locked {
         let content = content_rect(window);
         for (i, (dir, hit)) in anchor_hit_rects(window).into_iter().enumerate() {
-            let resp = ui.interact(hit, Id::new(("ito-anchor", i)), Sense::drag()).on_hover_cursor(resize_cursor(dir));
+            let resp =
+                ui.interact(hit, ui.id().with(("ito-anchor", i)), Sense::drag()).on_hover_cursor(resize_cursor(dir));
             if resp.drag_started_by(PointerButton::Primary) {
                 intent = Some(Intent::Resize(dir));
             }
@@ -220,7 +225,7 @@ pub fn frame_controls(ui: &Ui, window: Rect, chrome: &Chrome) -> Option<Intent> 
         }
     }
 
-    let readout = ui.ctx().animate_bool_with_time(Id::new("ito-size"), chrome.resizing && !chrome.locked, FADE_S);
+    let readout = ui.ctx().animate_bool_with_time(ui.id().with("ito-size"), chrome.resizing && !chrome.locked, FADE_S);
     if readout > 0.0 {
         paint_size_readout(painter, panel, readout);
     }
@@ -278,26 +283,18 @@ fn resize_cursor(dir: ResizeDirection) -> CursorIcon {
 }
 
 /// 0..1: how far the hover state (grip, outline, anchors) has faded in.
-fn hover_fade(ui: &Ui, window: Rect, chrome: &Chrome) -> f32 {
+pub(crate) fn hover_fade(ui: &Ui, window: Rect, chrome: &Chrome) -> f32 {
     let pointer_in = ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| window.contains(p));
     let active = !chrome.locked && (pointer_in || chrome.resizing);
-    ui.ctx().animate_bool_with_time(Id::new("ito-hover"), active, FADE_S)
+    ui.ctx().animate_bool_with_time(ui.id().with("ito-hover"), active, FADE_S)
 }
 
-fn paint_panel(painter: &Painter, window: Rect, opacity: f32) {
+/// The panel's background and border, then the brake point pulse over the background.
+pub(crate) fn paint_panel(painter: &Painter, window: Rect, opacity: f32, pulse: f32) {
     let panel = panel_rect(window);
-    // A compact version of the prototype's shadow, so it fits in the margin. Clipped to
-    // the outside of the panel, like a CSS box-shadow, so it doesn't darken the panel.
+    // A compact version of the prototype's shadow, so it fits in the margin.
     let shadow = Shadow { offset: [0, 3], blur: 10, spread: 0, color: theme::alpha(Color32::BLACK, 0.45 * opacity) };
-    let outside = [
-        Rect::from_min_max(window.min, pos2(window.right(), panel.top())),
-        Rect::from_min_max(pos2(window.left(), panel.bottom()), window.max),
-        Rect::from_min_max(pos2(window.left(), panel.top()), pos2(panel.left(), panel.bottom())),
-        Rect::from_min_max(pos2(panel.right(), panel.top()), pos2(window.right(), panel.bottom())),
-    ];
-    for clip in outside {
-        painter.with_clip_rect(clip).add(shadow.as_shape(panel, CornerRadius::same(RADIUS)));
-    }
+    outer_shadow(painter, panel, CornerRadius::same(RADIUS), shadow);
     painter.rect(
         panel,
         CornerRadius::same(RADIUS),
@@ -305,10 +302,46 @@ fn paint_panel(painter: &Painter, window: Rect, opacity: f32) {
         Stroke::new(BORDER_W, theme::alpha(theme::BORDER, 0.08 + 0.2 * opacity)),
         StrokeKind::Inside,
     );
+    if pulse > 0.0 {
+        painter.rect_filled(panel, CornerRadius::same(RADIUS), theme::alpha(PULSE, pulse));
+    }
+}
+
+/// Red that washes over both windows' backgrounds at a brake point.
+const PULSE: Color32 = Color32::from_rgba_premultiplied(133, 22, 15, 158); // rgba(214, 36, 24, 0.62)
+
+/// A shadow or glow around `rect` only, like a CSS `box-shadow`: clipped to outside
+/// the rect, so it doesn't tint what's in it.
+pub(crate) fn outer_shadow(painter: &Painter, rect: Rect, radius: CornerRadius, shadow: Shadow) {
+    let reach = f32::from(shadow.blur) + f32::from(shadow.spread) + 4.0;
+    let area = rect.expand(reach + f32::from(shadow.offset[0].unsigned_abs().max(shadow.offset[1].unsigned_abs())));
+    let outside = [
+        Rect::from_min_max(area.min, pos2(area.right(), rect.top())),
+        Rect::from_min_max(pos2(area.left(), rect.bottom()), area.max),
+        Rect::from_min_max(pos2(area.left(), rect.top()), pos2(rect.left(), rect.bottom())),
+        Rect::from_min_max(pos2(rect.right(), rect.top()), pos2(area.right(), rect.bottom())),
+    ];
+    for clip in outside {
+        painter.with_clip_rect(clip.intersect(painter.clip_rect())).add(shadow.as_shape(rect, radius));
+    }
+}
+
+/// Text on a dark halo of `strength` (0..1), so it reads over whatever is behind a
+/// see-through panel. `color` overrides the galley's own colours only when given.
+pub(crate) fn halo_galley(painter: &Painter, pos: Pos2, galley: Arc<Galley>, color: Color32, strength: f32) {
+    if strength > 0.01 {
+        let shade = theme::alpha(theme::SURFACE, 0.45 * strength);
+        for (dx, dy) in
+            [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0), (-0.7, -0.7), (0.7, -0.7), (-0.7, 0.7), (0.7, 0.7)]
+        {
+            painter.galley_with_override_text_color(pos + vec2(dx, dy), Arc::clone(&galley), shade);
+        }
+    }
+    painter.galley(pos, galley, color);
 }
 
 /// Three dots left of the title: "drag here".
-fn paint_grip(painter: &Painter, content: Rect, alpha: f32) {
+pub(crate) fn paint_grip(painter: &Painter, content: Rect, alpha: f32) {
     let color = theme::alpha(theme::HUD_MUTED, alpha);
     for k in 0..3 {
         painter.circle_filled(content.min + vec2(5.0, 10.0 + 4.0 * k as f32), 1.0, color);
@@ -316,7 +349,15 @@ fn paint_grip(painter: &Painter, content: Rect, alpha: f32) {
 }
 
 /// Text with CSS-style letter spacing (`tracking` in em).
-fn spaced(job: &mut LayoutJob, text: &str, weight: Weight, size: f32, tracking: f32, color: Color32, leading: f32) {
+pub(crate) fn spaced(
+    job: &mut LayoutJob,
+    text: &str,
+    weight: Weight,
+    size: f32,
+    tracking: f32,
+    color: Color32,
+    leading: f32,
+) {
     let format = TextFormat {
         font_id: theme::font(weight, size),
         color,
@@ -326,7 +367,14 @@ fn spaced(job: &mut LayoutJob, text: &str, weight: Weight, size: f32, tracking: 
     job.append(text, leading, format);
 }
 
-fn text_galley(painter: &Painter, text: &str, weight: Weight, size: f32, tracking: f32, color: Color32) -> Arc<Galley> {
+pub(crate) fn text_galley(
+    painter: &Painter,
+    text: &str,
+    weight: Weight,
+    size: f32,
+    tracking: f32,
+    color: Color32,
+) -> Arc<Galley> {
     let mut job = LayoutJob::default();
     spaced(&mut job, text, weight, size, tracking, color, 0.0);
     painter.layout_job(job)
@@ -370,7 +418,7 @@ impl LegendItem {
         self.key_rect.union(Rect::from_min_size(self.text_pos, self.galley.size()))
     }
 
-    fn paint(&self, painter: &Painter) {
+    fn paint(&self, painter: &Painter, fade: f32) {
         let w = (self.key_rect.width() - Self::KEY_GAP) / 2.0;
         for (i, color) in [theme::THROTTLE, theme::BRAKE].into_iter().enumerate() {
             let key = Rect::from_min_size(
@@ -384,7 +432,7 @@ impl LegendItem {
                 LegendKeys::Fills => paint_fill_swatch(painter, key, color),
             }
         }
-        painter.galley(self.text_pos, Arc::clone(&self.galley), theme::HUD_MUTED);
+        halo_galley(painter, self.text_pos, Arc::clone(&self.galley), theme::HUD_MUTED, fade);
     }
 }
 
@@ -425,9 +473,9 @@ impl HeaderLayout {
     const BADGE_GAP: f32 = 6.0;
     const BADGE_PAD: Vec2 = vec2(6.0, 3.0);
 
-    fn new(painter: &Painter, header: Rect, chrome: &Chrome) -> Self {
+    fn new(painter: &Painter, header: Rect, chrome: &Chrome, muted: Color32) -> Self {
         let cy = header.center().y;
-        let title = title_galley(painter, header.width());
+        let title = title_galley(painter, header.width(), muted);
         let title_pos = pos2(header.left() + PAD_LEFT, cy - title.size().y / 2.0);
         let title_right = title_pos.x + title.size().x;
         let close = close_rect(header);
@@ -437,7 +485,7 @@ impl HeaderLayout {
         let right_limit = badges.last().map_or(gear.left(), |(r, _)| r.left()) - ITEM_GAP;
         let mut legend = Vec::new();
         if header.width() > NO_LEGEND_MAX_W {
-            legend = legend_items(painter, chrome.reference_time, title_right + ITEM_GAP, cy);
+            legend = legend_items(painter, chrome.reference_time, title_right + ITEM_GAP, cy, muted);
             if legend.last().is_some_and(|item| item.rect().right() > right_limit) {
                 legend.clear();
             }
@@ -456,10 +504,10 @@ impl HeaderLayout {
             .collect()
     }
 
-    fn paint(&self, painter: &Painter) {
-        painter.galley(self.title_pos, Arc::clone(&self.title), theme::HUD_TEXT);
+    fn paint(&self, painter: &Painter, fade: f32) {
+        halo_galley(painter, self.title_pos, Arc::clone(&self.title), theme::HUD_TEXT, fade);
         for item in &self.legend {
-            item.paint(painter);
+            item.paint(painter, fade);
         }
         for (rect, galley) in &self.badges {
             painter.rect_filled(*rect, CornerRadius::same(5), theme::alpha(theme::WARN, 0.16));
@@ -469,24 +517,30 @@ impl HeaderLayout {
 }
 
 /// "THROTTLE / BRAKE %", or "THR / BRK %" when the panel is narrow.
-fn title_galley(painter: &Painter, width: f32) -> Arc<Galley> {
+fn title_galley(painter: &Painter, width: f32, muted: Color32) -> Arc<Galley> {
     let name = if width <= SHORT_TITLE_MAX_W { "THR / BRK" } else { "THROTTLE / BRAKE" };
     let mut job = LayoutJob::default();
     spaced(&mut job, name, Weight::Bold, 11.0, 0.07, theme::HUD_TEXT, 0.0);
-    spaced(&mut job, "%", Weight::Bold, 11.0, 0.07, theme::HUD_MUTED, 5.0);
+    spaced(&mut job, "%", Weight::Bold, 11.0, 0.07, muted, 5.0);
     painter.layout_job(job)
 }
 
 /// "LIVE" with line keys, then "REF 1:55.992" with fill keys when a reference is drawn.
-fn legend_items(painter: &Painter, reference_time: Option<&str>, left: f32, cy: f32) -> Vec<LegendItem> {
+fn legend_items(
+    painter: &Painter,
+    reference_time: Option<&str>,
+    left: f32,
+    cy: f32,
+    muted: Color32,
+) -> Vec<LegendItem> {
     const SIZE: f32 = 10.0;
     const TRACKING: f32 = 0.06;
     const GAP: f32 = 12.0;
-    let live = text_galley(painter, "LIVE", Weight::SemiBold, SIZE, TRACKING, theme::HUD_MUTED);
+    let live = text_galley(painter, "LIVE", Weight::SemiBold, SIZE, TRACKING, muted);
     let mut items = vec![LegendItem::new(LegendKeys::Lines, live, left, cy)];
     if let Some(time) = reference_time {
         let mut job = LayoutJob::default();
-        spaced(&mut job, "REF ", Weight::SemiBold, SIZE, TRACKING, theme::HUD_MUTED, 0.0);
+        spaced(&mut job, "REF ", Weight::SemiBold, SIZE, TRACKING, muted, 0.0);
         spaced(&mut job, time, Weight::Bold, SIZE, TRACKING, theme::HUD_TEXT, 0.0);
         let left = items[0].rect().right() + GAP;
         items.push(LegendItem::new(LegendKeys::Fills, painter.layout_job(job), left, cy));
@@ -511,7 +565,7 @@ fn place_badges(painter: &Painter, badges: &[&str], right: f32, left_limit: f32,
     placed
 }
 
-fn paint_gear(painter: &Painter, rect: Rect, hovered: bool, open: bool, turn: f32) {
+pub(crate) fn paint_gear(painter: &Painter, rect: Rect, hovered: bool, open: bool, turn: f32) {
     let (color, background) = if open {
         (theme::ACCENT, theme::alpha(theme::ACCENT, 0.12))
     } else if hovered {
@@ -531,7 +585,7 @@ fn paint_gear(painter: &Painter, rect: Rect, hovered: bool, open: bool, turn: f3
 }
 
 /// A muted × that turns red on hover, sized to match the gear.
-fn paint_close(painter: &Painter, rect: Rect, hovered: bool) {
+pub(crate) fn paint_close(painter: &Painter, rect: Rect, hovered: bool) {
     let (color, background) = if hovered {
         (theme::HUD_TEXT, theme::alpha(theme::DANGER, 0.22))
     } else {
@@ -698,6 +752,7 @@ mod tests {
             badges,
             file_hover: false,
             resizing: false,
+            pulse: 0.0,
         }
     }
 

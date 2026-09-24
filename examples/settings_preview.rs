@@ -14,7 +14,7 @@ use ito::library::{Library, LibraryEntry};
 use ito::matching::{self, RefInfo};
 use ito::settings::{Axis, Settings, SettingsTab};
 use ito::telemetry::SessionInfo;
-use ito::ui::settings_panel::{self, ConnectionState, PanelContext, RefCard};
+use ito::ui::settings_panel::{self, ConnectionState, Owner, PanelContext, RefCard};
 use ito::ui::theme;
 
 /// The prototype page's background, behind the panel's rounded corners.
@@ -49,13 +49,15 @@ struct Variant {
     tabs: u32,
     /// Tallest the window may be (a short monitor); the panel scrolls past it.
     max_height: f32,
+    /// The graph's settings or the brake point window's.
+    owner: Owner,
 }
 
 impl Variant {
     fn new(name: &'static str, tab: SettingsTab) -> Self {
         Self {
             name,
-            settings: Settings { tab, ..Default::default() },
+            settings: Settings { tab, cue_tab: tab, ..Default::default() },
             laps: Laps::Saved,
             at_spa: false,
             error: None,
@@ -65,6 +67,7 @@ impl Variant {
             click: false,
             tabs: 0,
             max_height: f32::INFINITY,
+            owner: if tab.is_cue() { Owner::Cue } else { Owner::Graph },
         }
     }
 
@@ -124,6 +127,10 @@ fn variants() -> Vec<Variant> {
         empty,
         many,
         short,
+        // The second saved lap's ×. Last: its pending "Remove?" would carry over.
+        Variant::new("countdown", SettingsTab::Countdown),
+        Variant::new("grades", SettingsTab::Grades),
+        Variant::new("window", SettingsTab::Window),
         // The second saved lap's ×. Last: its pending "Remove?" would carry over.
         Variant::new("reference-confirm-remove", SettingsTab::Reference).clicking(272.0, 322.0),
     ]
@@ -293,6 +300,7 @@ impl eframe::App for Preview {
             browsing: false,
             file_hover: v.file_hover,
             max_height: v.max_height,
+            owner: v.owner,
         };
         let out = settings_panel::show(ui, &mut v.settings, &cx);
 
