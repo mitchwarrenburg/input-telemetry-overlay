@@ -306,7 +306,9 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
   grid-template-rows: minmax(0, 1fr) auto;
   gap: 7px;
 }
-.cue-main { display: flex; gap: 3px; min-height: 0; }
+/* The bar never gets shorter than 34 px (the full window's minimum height keeps it
+   there), so the count, BRAKE and the target gauge always have room. */
+.cue-main { display: flex; gap: 3px; min-height: 34px; }
 
 /* Bar: three one-count segments, filling toward the cap. */
 .cue-track {
@@ -361,12 +363,13 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
   font: 700 clamp(12px, 15cqh, 20px)/1 var(--font-hud);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  /* Its own width is a container too, so the text below can be capped by it. */
-  container-type: inline-size;
+  /* The box is a size container too, so its text is sized to the box itself, not just
+     to the window. */
+  container-type: size;
 }
-/* "BRAKE" is about 3.6 em wide: at most 27% of the box's inner width per em keeps it
-   inside at any window size (the window's height alone sets 1em). */
-.cue-cap span { display: block; font-size: min(1em, 27cqi); }
+/* "BRAKE" is about 3.6 em wide: at most 27% of the box's inner width per em, and 58% of
+   its height, keeps it inside at any window size (the window's height sets 1em). */
+.cue-cap span { display: block; line-height: 1; font-size: min(1em, 27cqi, 58cqh); }
 
 /* The cap: red outline, its tint deepening with each count. */
 .cue-body[data-mode="countdown"] .cue-cap {
@@ -377,7 +380,8 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 }
 .cue-body[data-beat="2"] .cue-cap { --tint: rgba(200, 40, 28, 0.22); }
 .cue-body[data-beat="1"] .cue-cap { --tint: rgba(138, 26, 17, 0.45); }
-.cue-body[data-mode="countdown"] .cue-cap span { font-size: clamp(22px, 34cqh, 44px); letter-spacing: 0; font-variant-numeric: tabular-nums; }
+/* The count: 82% of the box's height (the digit's box is 1 em tall), 14–44 px. */
+.cue-body[data-mode="countdown"] .cue-cap span { font-size: clamp(14px, 82cqh, 44px); letter-spacing: 0; font-variant-numeric: tabular-nums; }
 /* Each count pops in; alternating names restart the animation on every change. */
 .cue-body[data-beat="3"] .cue-cap span, .cue-body[data-beat="1"] .cue-cap span { animation: cue-pop-a 0.22s ease-out; }
 .cue-body[data-beat="2"] .cue-cap span { animation: cue-pop-b 0.22s ease-out; }
@@ -417,8 +421,9 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round
 .ito-cue.is-compact .cue-target,
 .ito-cue.is-compact .cue-msg { display: none; }
 .ito-cue.is-compact .cue-body { inset: 4px; grid-template-rows: minmax(0, 1fr); gap: 0; }
+.ito-cue.is-compact .cue-main { min-height: 0; }
 .ito-cue.is-compact .cue-cap { width: clamp(40px, 13cqw, 72px); font-size: clamp(10px, 34cqh, 16px); }
-.ito-cue.is-compact .cue-body[data-mode="countdown"] .cue-cap span { font-size: clamp(16px, 62cqh, 30px); }
+
 .ito-cue.is-compact:not(.is-locked) { cursor: grab; }
 .ito-cue.is-compact.is-moving { cursor: grabbing; }
 

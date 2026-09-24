@@ -112,7 +112,7 @@
       note: "Empty again while you're still braking; the gauge fills toward the target line." },
     { tag: "Released", title: "Result", state: S({ mode: "idle", beat: 0, fill: 0, zoneNo: 5, dist: 412, target: 0.48, verdict: verdict("good", 0.05, 3, 0.7, 0.72, 4), pips: pips(["good", "late", "good", "good"], 4) }),
       note: "The result holds until the next zone is decided; the pip for Z4 turns green." },
-  ].forEach((s) => card(seq, { ...s, w: 236, h: 88 }));
+  ].forEach((s) => card(seq, { ...s, w: 236, h: 96 }));
 
   // ---------- grade scale ----------
   const tol = 0.08, perfect = 0.03;
@@ -160,7 +160,7 @@
   // ---------- sizes ----------
   const sizes = $("#sizes");
   card(sizes, { tag: "360 × 96", title: "Default", state: S({ fill: 0.5 }), note: "Placed above the graph at first; move it anywhere." });
-  card(sizes, { tag: "250 × 88", title: "Narrow", state: S({ fill: 0.5 }), w: 250, h: 88,
+  card(sizes, { tag: "250 × 96", title: "Narrow", state: S({ fill: 0.5 }), w: 250, h: 96,
     note: "Below 330 px the zone strip goes; below 290 px the metres; below 250 px the peak." });
   card(sizes, { tag: "480 × 128", title: "Large", state: S({ beat: 1, fill: 0.8, dist: 46 }), w: 480, h: 128,
     note: "The count and cap text scale with the window's height." });

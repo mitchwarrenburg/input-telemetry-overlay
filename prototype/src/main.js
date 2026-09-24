@@ -100,7 +100,8 @@
     return { x: Math.round(o.x + (o.w - w) / 2), y, w, h };
   }
   const cueFrameKey = () => (settings.v.cueCompact ? "cueCompactFrame" : "cueFrame");
-  const cueMin = () => (settings.v.cueCompact ? [180, 30] : [230, 84]);
+  // Full: the header, a 34 px bar and the timing row. Compact: just the bar.
+  const cueMin = () => (settings.v.cueCompact ? [180, 30] : [230, 96]);
   // In compact mode there's no header: the whole bar moves the window.
   const cueFrame = ITO.attachFrame(cueEl, {
     handle: cueEl,
