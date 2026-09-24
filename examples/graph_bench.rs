@@ -111,6 +111,9 @@ fn measure(ctx: &egui::Context, feed: &Feed, reference: &Lap, axis: Axis, behind
         header_height: 26.0,
         obstacles: &[],
         message: None,
+        brake_points: None,
+        // The default 80 % background: the reference fills get their dark backing.
+        fade: 0.2,
     };
     let input = || egui::RawInput {
         screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(700.0, 200.0))),

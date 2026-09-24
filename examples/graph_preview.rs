@@ -14,11 +14,12 @@ use std::sync::Arc;
 use eframe::egui::{
     self, Align2, Color32, ColorImage, CornerRadius, Event, Rect, Stroke, StrokeKind, Vec2, pos2, vec2,
 };
+use ito::cue::{BrakeCue, CuePosition, CueState};
 use ito::demo::{SimulatedDriver, demo_session, sample_lap};
 use ito::lap::Lap;
 use ito::settings::{Axis, LabelMode, Settings};
 use ito::trace::{DistanceTracker, LiveSample, LiveTrace, Progress};
-use ito::ui::graph::{self, CarNow, GraphScene, LabelOptions};
+use ito::ui::graph::{self, BrakePoints, CarNow, GraphScene, LabelOptions};
 use ito::ui::theme::{self, Weight};
 
 /// The page behind the overlay in the prototype.
@@ -29,13 +30,17 @@ const MARGIN: f32 = 10.0;
 const SETTLE_FRAMES: u32 = 3;
 const STEP: f64 = 1.0 / 60.0;
 
-/// The simulated driver feeding a live trace, as the app does with iRacing frames.
+/// The simulated driver feeding a live trace, as the app does with iRacing frames, and
+/// the brake point countdown grading it.
 struct Sim {
     driver: SimulatedDriver,
     tracker: DistanceTracker,
     trace: LiveTrace,
     now: Option<CarNow>,
     track_length: f64,
+    lap: Arc<Lap>,
+    cue: BrakeCue,
+    cue_state: Option<CueState>,
 }
 
 impl Sim {
@@ -47,6 +52,9 @@ impl Sim {
             trace: LiveTrace::new(),
             now: None,
             track_length,
+            lap: Arc::clone(lap),
+            cue: BrakeCue::new(),
+            cue_state: None,
         };
         while sim.now.is_none_or(|n| n.lap_pos * track_length < metres) {
             sim.step();
@@ -69,6 +77,9 @@ impl Sim {
         // The widest window any setting can show.
         self.trace.prune(f.session_time - 25.0, d - 1600.0);
         self.now = Some(CarNow { t: f.session_time, lap_pos, throttle: f.throttle, brake: f.brake });
+        let at = CuePosition { t: f.session_time, lap_pos, brake: f.brake };
+        let cfg = Settings::default().cue_config();
+        self.cue_state = Some(self.cue.update(Some(at), &self.trace, Some(&self.lap), self.track_length, &cfg));
     }
 }
 
@@ -86,17 +97,24 @@ struct Case {
     size: Vec2,
     axis: Axis,
     state: State,
+    /// Background opacity, 0..1; below 1 the panel is over a bright backdrop.
+    bg: f32,
 }
 
-const CASES: [Case; 8] = [
-    Case { name: "680x170_distance", size: vec2(680.0, 170.0), axis: Axis::Distance, state: State::Driving },
-    Case { name: "680x170_time", size: vec2(680.0, 170.0), axis: Axis::Time, state: State::Driving },
-    Case { name: "300x190_distance", size: vec2(300.0, 190.0), axis: Axis::Distance, state: State::Driving },
-    Case { name: "300x190_time", size: vec2(300.0, 190.0), axis: Axis::Time, state: State::Driving },
-    Case { name: "680x100_distance", size: vec2(680.0, 100.0), axis: Axis::Distance, state: State::Driving },
-    Case { name: "680x170_start_finish", size: vec2(680.0, 170.0), axis: Axis::Distance, state: State::StartFinish },
-    Case { name: "680x170_no_reference", size: vec2(680.0, 170.0), axis: Axis::Distance, state: State::NoReference },
-    Case { name: "680x170_waiting", size: vec2(680.0, 170.0), axis: Axis::Distance, state: State::Waiting },
+const fn case(name: &'static str, w: f32, h: f32, axis: Axis, state: State) -> Case {
+    Case { name, size: vec2(w, h), axis, state, bg: 0.8 }
+}
+
+const CASES: [Case; 9] = [
+    case("680x170_distance", 680.0, 170.0, Axis::Distance, State::Driving),
+    case("680x170_time", 680.0, 170.0, Axis::Time, State::Driving),
+    case("300x190_distance", 300.0, 190.0, Axis::Distance, State::Driving),
+    case("300x190_time", 300.0, 190.0, Axis::Time, State::Driving),
+    case("680x100_distance", 680.0, 100.0, Axis::Distance, State::Driving),
+    case("680x170_start_finish", 680.0, 170.0, Axis::Distance, State::StartFinish),
+    case("680x170_no_reference", 680.0, 170.0, Axis::Distance, State::NoReference),
+    case("680x170_waiting", 680.0, 170.0, Axis::Distance, State::Waiting),
+    Case { bg: 0.15, ..case("680x170_background_15", 680.0, 170.0, Axis::Distance, State::Driving) },
 ];
 
 /// Screenshot mode: which case is showing and whether its capture is on the way.
@@ -130,8 +148,18 @@ impl Preview {
     }
 
     /// Paints the overlay panel (background, border, a header title) and the graph.
-    fn paint_case(&self, painter: &egui::Painter, outer: Rect, axis: Axis, state: State) {
-        let bg_opacity = Settings::default().bg_opacity / 100.0;
+    fn paint_case(&self, painter: &egui::Painter, outer: Rect, axis: Axis, state: State, bg_opacity: f32) {
+        if bg_opacity < 0.8 {
+            // Sky, grass and track, like a sim behind a see-through panel.
+            let band = |from: f32, to: f32, color: Color32| {
+                let y = |f: f32| outer.top() + f * outer.height();
+                painter.rect_filled(Rect::from_x_y_ranges(outer.x_range(), y(from)..=y(to)), 0.0, color);
+            };
+            band(0.0, 0.45, Color32::from_rgb(120, 168, 214));
+            band(0.45, 0.7, Color32::from_rgb(88, 120, 70));
+            band(0.7, 1.0, Color32::from_rgb(70, 72, 76));
+            band(0.84, 0.87, Color32::from_rgb(235, 235, 235));
+        }
         let border = Stroke::new(1.0, theme::alpha(theme::BORDER, 0.08 + 0.2 * bg_opacity));
         painter.rect(
             outer,
@@ -169,6 +197,8 @@ impl Preview {
                 State::Waiting => Some(("Waiting for iRacing", "The overlay starts when you're on track")),
                 State::Driving | State::StartFinish => None,
             },
+            brake_points: sim.cue_state.as_ref().map(|c| BrakePoints { zones: &c.cue_zones, marks: &c.marks }),
+            fade: 1.0 - bg_opacity,
         };
         graph::paint(painter, panel, &scene);
     }
@@ -205,7 +235,7 @@ impl Preview {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
             shots.requested = true;
         }
-        self.paint_case(painter, outer, case.axis, case.state);
+        self.paint_case(painter, outer, case.axis, case.state, case.bg);
     }
 
     /// Live mode: advances the driver in real time and shows both axes.
@@ -218,7 +248,7 @@ impl Preview {
         let size = vec2(680.0, 170.0);
         for (row, axis) in [Axis::Distance, Axis::Time].into_iter().enumerate() {
             let outer = Rect::from_min_size(pos2(MARGIN, MARGIN + row as f32 * (size.y + MARGIN)), size);
-            self.paint_case(painter, outer, axis, State::Driving);
+            self.paint_case(painter, outer, axis, State::Driving, Settings::default().bg_opacity / 100.0);
         }
     }
 }

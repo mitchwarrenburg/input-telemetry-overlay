@@ -24,7 +24,7 @@ use crate::platform::{self, Desktop, DesktopEvent};
 use crate::settings::{self, Settings, SettingsTab, WindowRect};
 use crate::telemetry::iracing::IracingReader;
 use crate::telemetry::{SessionInfo, TelemetryEvent};
-use crate::ui::graph::{self, GraphScene, LabelOptions};
+use crate::ui::graph::{self, BrakePoints, GraphScene, LabelOptions};
 use crate::ui::overlay::{self, Chrome, HEADER_HEIGHT, Intent};
 use crate::ui::settings_panel::{self, ConnectionState, Owner, PanelAction, PanelContext, PanelOutput};
 use crate::ui::theme;
@@ -508,6 +508,11 @@ impl OverlayApp {
             header_height: HEADER_HEIGHT,
             obstacles: &header.obstacles,
             message: self.graph_message(),
+            brake_points: self.settings.cue_graph.then(|| {
+                let state = self.cue_window.state();
+                BrakePoints { zones: &state.cue_zones, marks: &state.marks }
+            }),
+            fade: 1.0 - self.settings.bg_opacity / 100.0,
         };
         graph::paint(&ui.painter().with_clip_rect(content), content, &scene);
 

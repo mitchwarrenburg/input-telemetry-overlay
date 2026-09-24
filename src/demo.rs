@@ -102,7 +102,9 @@ impl SimulatedDriver {
         for (k, z) in zones.iter().enumerate() {
             let lo = if k > 0 { (zones[k - 1].end + z.start) / 2 } else { 0 };
             let hi = if k + 1 < zones.len() { (z.end + zones[k + 1].start) / 2 } else { n - 1 };
-            let shift = rng.range(-9.0, 7.0); // samples: brake earlier (−) or later (+)
+            // Samples: brake earlier (−) or later (+). Bell-shaped, about ±0.35 s at the
+            // extremes, so the brake point countdown sees every timing grade.
+            let shift = (rng.next() + rng.next() + rng.next() - 1.5) * 14.0;
             let stretch = rng.range(0.9, 1.15); // longer or shorter trail
             let scale = rng.range(0.88, 1.3) as f32; // softer or harder pedal
             let spike = if rng.next() < 0.5 { rng.range(0.04, 0.12) as f32 } else { 0.0 };
