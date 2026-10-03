@@ -10,7 +10,7 @@ use eframe::egui::{
     Shape, Stroke, StrokeKind, Ui, Vec2, pos2, text::LayoutJob, vec2,
 };
 
-use super::overlay::{self, BUTTON_GAP, Chrome, GEAR_SIZE, Intent, PAD_LEFT};
+use super::overlay::{self, BUTTON_GAP, Chrome, GEAR_SIZE, HEADER_HEIGHT, Intent, PAD_LEFT};
 use super::theme::{self, Weight};
 use super::widgets;
 use crate::cue::{CueMode, CueState, Grade, Pip};
@@ -284,7 +284,7 @@ fn peak_diff(peak: f32, target: f32) -> String {
 /// Title, the zone ahead, the zone pips and the collapse, gear and close buttons.
 fn header(ui: &Ui, painter: &Painter, window: Rect, f: &CueFrame, look: Look, hover: f32) -> Option<CueIntent> {
     let (state, chrome) = (f.state, &f.chrome);
-    let header = overlay::header_rect(window);
+    let header = overlay::header_rect(window, HEADER_HEIGHT);
     let content = overlay::content_rect(window);
     let width = content.width();
     let cy = header.center().y;
@@ -840,6 +840,7 @@ mod tests {
             let state = BrakeCue::new().update(None, &LiveTrace::new(), None, 0.0, &CueConfig::default());
             let chrome = Chrome {
                 opacity: 0.8,
+                header_height: HEADER_HEIGHT,
                 locked: self.locked,
                 settings_open: false,
                 reference_time: None,
@@ -894,7 +895,7 @@ mod tests {
     #[test]
     fn the_header_moves_the_window_and_its_buttons_do_what_they_say() {
         let h = Harness::new(DEFAULT_PANEL, false);
-        let header = overlay::header_rect(h.window);
+        let header = overlay::header_rect(h.window, HEADER_HEIGHT);
         let close = overlay::close_rect(header);
         let gear = close.translate(vec2(-(GEAR_SIZE + BUTTON_GAP), 0.0));
         let collapse = gear.translate(vec2(-(GEAR_SIZE + BUTTON_GAP), 0.0));
@@ -922,7 +923,7 @@ mod tests {
     fn a_locked_window_ignores_drags() {
         let mut h = Harness::new(DEFAULT_PANEL, false);
         h.locked = true;
-        let header = overlay::header_rect(h.window);
+        let header = overlay::header_rect(h.window, HEADER_HEIGHT);
         assert!(h.drag(header.left_center() + vec2(40.0, 0.0)).is_empty());
         assert!(h.drag(h.window.right_center() - vec2(3.0, 0.0)).is_empty());
         let mut compact = Harness::new(vec2(DEFAULT_PANEL.x, COMPACT_HEIGHT), true);

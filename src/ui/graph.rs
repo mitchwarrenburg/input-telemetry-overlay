@@ -90,7 +90,7 @@ const MIDDLE_BASELINE: Vec2 = vec2(0.0, -1.0);
 pub fn paint(painter: &Painter, panel: Rect, scene: &GraphScene) {
     let painter = painter.with_clip_rect(panel);
     let rail = scene.labels.show && scene.reference.is_some() && scene.labels.mode != LabelMode::Live;
-    let Some(PlotLayout { plot, compact, x_band }) = PlotLayout::new(panel, scene.header_height, rail) else {
+    let Some(PlotLayout { plot, compact, x_band }) = PlotLayout::new(panel, scene.header_height) else {
         return;
     };
     let muted = theme::muted(scene.fade);
@@ -105,7 +105,7 @@ pub fn paint(painter: &Painter, panel: Rect, scene: &GraphScene) {
             view.paint_brake_points(points);
         }
         view.paint_cursor();
-        let rail_labels = view.paint_rail(&ref_peaks);
+        let rail_labels = view.paint_rail(&ref_peaks, scene.obstacles);
         view.paint_pins(&live_peaks, scene.obstacles.iter().copied().chain(rail_labels).collect());
         if x_band {
             view.paint_x_band(compact, muted);
@@ -407,8 +407,9 @@ impl<'a> View<'a> {
     }
 
     /// Gold rings on the reference's peaks, then each peak's label on the rail above the
-    /// plot, at the top of its dotted line. Returns the labels' boxes.
-    fn paint_rail(&self, peaks: &[PeakMark]) -> Vec<Rect> {
+    /// plot, at the top of its dotted line and clear of the header's `obstacles`. Returns
+    /// the labels' boxes.
+    fn paint_rail(&self, peaks: &[PeakMark], obstacles: &[Rect]) -> Vec<Rect> {
         let painter = self.painter;
         for p in peaks {
             paint_dot(painter, p.at, theme::TARGET, true);
@@ -419,7 +420,7 @@ impl<'a> View<'a> {
         let spots: Vec<(f32, f32)> =
             peaks.iter().zip(&galleys).map(|(p, g)| (p.at.x, g.size().x.ceil() + 8.0)).collect();
         let mut labels = Vec::new();
-        for (spot, galley) in place_rail(self.plot, self.scale.x(0.0), &spots).into_iter().zip(galleys) {
+        for (spot, galley) in place_rail(self.plot, self.scale.x(0.0), &spots, obstacles).into_iter().zip(galleys) {
             let Some(rect) = spot else { continue };
             let stroke = Stroke::new(1.0, theme::alpha(theme::TARGET, 0.8));
             painter.rect(
@@ -644,7 +645,7 @@ mod tests {
             reference,
             ref_opacity: 1.0,
             labels: LabelOptions { show: true, mode: LabelMode::Both, min: 0.1 },
-            header_height: 26.0,
+            header_height: 20.0,
             obstacles: &[],
             message: None,
             brake_points: None,
@@ -703,7 +704,7 @@ mod tests {
         let painter =
             Painter::new(eframe::egui::Context::default(), eframe::egui::LayerId::background(), Rect::EVERYTHING);
         let panel = Rect::from_min_size(Pos2::ZERO, vec2(680.0, 170.0));
-        let plot = PlotLayout::new(panel, 26.0, true).unwrap().plot;
+        let plot = PlotLayout::new(panel, 20.0).unwrap().plot;
         let view = View::new(&painter, panel, plot, &s).unwrap();
         // Yours behind the car (the active 8% event is under the 10% minimum).
         let yours = view.live_peaks();
@@ -789,7 +790,7 @@ mod tests {
         let shapes = painted(&s, vec2(680.0, 170.0));
         let is_mark = |shape: &Shape| matches!(shape, Shape::Path(p) if p.fill == theme::BRAKE && p.points.len() == 3);
         let panel = Rect::from_min_size(Pos2::ZERO, vec2(680.0, 170.0));
-        let plot = PlotLayout::new(panel, 26.0, false).unwrap().plot;
+        let plot = PlotLayout::new(panel, 20.0).unwrap().plot;
         let scale = Scale::new(plot, 500.0, 500.0).unwrap();
         // Zone 0's brake point is 100 m behind the car.
         let x = scale.x(-100.0);
@@ -822,7 +823,7 @@ mod tests {
         let painter =
             Painter::new(eframe::egui::Context::default(), eframe::egui::LayerId::background(), Rect::EVERYTHING);
         let panel = Rect::from_min_size(Pos2::ZERO, vec2(680.0, 170.0));
-        let plot = PlotLayout::new(panel, 26.0, false).unwrap().plot;
+        let plot = PlotLayout::new(panel, 20.0).unwrap().plot;
         let mut s = scene(Axis::Distance, &live, None, car(f64::NAN));
         assert!(View::new(&painter, panel, plot, &s).is_none());
         s.now = Some(car(0.5));
@@ -863,7 +864,7 @@ mod tests {
         let painter =
             Painter::new(eframe::egui::Context::default(), eframe::egui::LayerId::background(), Rect::EVERYTHING);
         let panel = Rect::from_min_size(Pos2::ZERO, vec2(680.0, 170.0));
-        let plot = PlotLayout::new(panel, 26.0, false).unwrap().plot;
+        let plot = PlotLayout::new(panel, 20.0).unwrap().plot;
         for axis in [Axis::Distance, Axis::Time] {
             let s = scene(axis, &live, None, now);
             let view = View::new(&painter, panel, plot, &s).unwrap();
@@ -927,7 +928,7 @@ mod tests {
                 _ => None,
             })
             .collect();
-        let plot = PlotLayout::new(panel, s.header_height, false).unwrap().plot;
+        let plot = PlotLayout::new(panel, s.header_height).unwrap().plot;
         (plot, Scale::new(plot, s.behind, s.ahead).unwrap().x(0.0), rects)
     }
 

@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use eframe::egui::{self, Align2, Color32, ColorImage, Event, Rect, UiBuilder, Vec2, pos2, vec2};
 use ito::cue::{CueMode, CueState, FinalPeak, Flash, Grade, Pip, Verdict};
 use ito::ui::cue_view::{self, CueFrame};
-use ito::ui::overlay::{Chrome, MARGIN};
+use ito::ui::overlay::{Chrome, HEADER_HEIGHT, MARGIN};
 use ito::ui::theme::{self, Weight};
 
 const COLUMN: f32 = 400.0;
@@ -258,6 +258,7 @@ impl eframe::App for Preview {
                 state: &case.state,
                 chrome: Chrome {
                     opacity: case.bg,
+                    header_height: HEADER_HEIGHT,
                     locked: false,
                     settings_open: false,
                     reference_time: None,

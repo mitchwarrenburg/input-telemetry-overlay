@@ -12,8 +12,11 @@ use super::theme::{self, Weight};
 
 /// Transparent border around the panel that holds the resize anchors, points.
 pub const MARGIN: f32 = 8.0;
-/// Height of the header strip at the top of the panel, points.
+/// Height of the brake point window's header strip, points.
 pub const HEADER_HEIGHT: f32 = 26.0;
+/// Height of the graph's header strip, points: slimmer, as the reference peak labels
+/// share its lower edge and every point of it comes out of the plot.
+pub const GRAPH_HEADER_HEIGHT: f32 = 20.0;
 /// Smallest panel, points: wide enough for the short title, the longest badge
 /// ("REF: OTHER LAYOUT"), the gear and the close button.
 pub const MIN_PANEL: Vec2 = vec2(272.0, 90.0);
@@ -86,6 +89,8 @@ const GEAR_STROKE: f32 = 1.7;
 pub struct Chrome<'a> {
     /// Panel background opacity, 0..1.
     pub opacity: f32,
+    /// Height of the header strip, points.
+    pub header_height: f32,
     /// Click-through: no hover effects, grip, outline or anchors.
     pub locked: bool,
     pub settings_open: bool,
@@ -129,18 +134,17 @@ pub fn content_rect(window: Rect) -> Rect {
     panel_rect(window).shrink(BORDER_W)
 }
 
-/// The header strip at the top of the content.
-pub(crate) fn header_rect(window: Rect) -> Rect {
+/// The header strip at the top of the content, `height` points tall.
+pub(crate) fn header_rect(window: Rect, height: f32) -> Rect {
     let content = content_rect(window);
-    Rect::from_min_size(content.min, vec2(content.width(), HEADER_HEIGHT))
+    Rect::from_min_size(content.min, vec2(content.width(), height))
 }
 
-/// The close button, at the header's right end; the gear sits just left of it.
+/// The close button, at the header's right end; the gear sits just left of it. No
+/// taller than the header.
 pub(crate) fn close_rect(header: Rect) -> Rect {
-    Rect::from_center_size(
-        pos2(header.right() - PAD_RIGHT - GEAR_SIZE / 2.0, header.center().y),
-        Vec2::splat(GEAR_SIZE),
-    )
+    let size = GEAR_SIZE.min(header.height());
+    Rect::from_center_size(pos2(header.right() - PAD_RIGHT - size / 2.0, header.center().y), Vec2::splat(size))
 }
 
 /// Paints the panel background and the header, and senses the header drag, the gear
@@ -150,7 +154,7 @@ pub fn panel_and_header(ui: &Ui, window: Rect, chrome: &Chrome) -> Header {
     paint_panel(painter, window, chrome.opacity, chrome.pulse);
 
     let content = content_rect(window);
-    let header = header_rect(window);
+    let header = header_rect(window, chrome.header_height);
     let fade = 1.0 - chrome.opacity;
     let layout = HeaderLayout::new(painter, header, chrome, theme::muted(fade));
 
@@ -213,7 +217,7 @@ pub fn frame_controls(ui: &Ui, window: Rect, chrome: &Chrome) -> Option<Intent> 
     let mut intent = None;
     if !chrome.locked {
         let content = content_rect(window);
-        for (i, (dir, hit)) in anchor_hit_rects(window).into_iter().enumerate() {
+        for (i, (dir, hit)) in anchor_hit_rects(window, chrome.header_height).into_iter().enumerate() {
             let resp =
                 ui.interact(hit, ui.id().with(("ito-anchor", i)), Sense::drag()).on_hover_cursor(resize_cursor(dir));
             if resp.drag_started_by(PointerButton::Primary) {
@@ -235,13 +239,13 @@ pub fn frame_controls(ui: &Ui, window: Rect, chrome: &Chrome) -> Option<Intent> 
 /// Where each resize anchor grabs the pointer: the whole margin plus a few points into
 /// the panel, corners taking precedence over edges. The rects don't overlap each other
 /// or the header's buttons, which are sensed first and would lose presses to them.
-pub fn anchor_hit_rects(window: Rect) -> [(ResizeDirection, Rect); 8] {
+pub fn anchor_hit_rects(window: Rect, header_height: f32) -> [(ResizeDirection, Rect); 8] {
     use ResizeDirection::*;
     let corner = MARGIN + BORDER_W + 9.0;
     let edge = MARGIN + BORDER_W + 5.0;
     let (l, r, t, b) = (window.left(), window.right(), window.top(), window.bottom());
     let square = |x: f32, y: f32| Rect::from_min_size(pos2(x, y), Vec2::splat(corner));
-    let close = close_rect(header_rect(window));
+    let close = close_rect(header_rect(window, header_height));
     let north_bottom = (t + edge).min(close.top());
     let north_east = Rect::from_min_max(pos2((r - corner).max(close.right()), t), pos2(r, t + corner));
     [
@@ -479,7 +483,7 @@ impl HeaderLayout {
         let title_pos = pos2(header.left() + PAD_LEFT, cy - title.size().y / 2.0);
         let title_right = title_pos.x + title.size().x;
         let close = close_rect(header);
-        let gear = close.translate(vec2(-(GEAR_SIZE + BUTTON_GAP), 0.0));
+        let gear = close.translate(vec2(-(close.width() + BUTTON_GAP), 0.0));
 
         let badges = place_badges(painter, chrome.badges, gear.left() - 8.0, title_right + ITEM_GAP, cy);
         let right_limit = badges.last().map_or(gear.left(), |(r, _)| r.left()) - ITEM_GAP;
@@ -691,10 +695,16 @@ mod tests {
 
     #[test]
     fn anchor_hit_areas_cover_the_margin_without_overlapping() {
+        for height in [HEADER_HEIGHT, GRAPH_HEADER_HEIGHT] {
+            anchors_cover_the_margin(height);
+        }
+    }
+
+    fn anchors_cover_the_margin(header_height: f32) {
         let win = window(680.0, 170.0);
-        let hits = anchor_hit_rects(win);
-        let close = close_rect(header_rect(win));
-        let buttons = close.union(close.translate(vec2(-(GEAR_SIZE + BUTTON_GAP), 0.0)));
+        let hits = anchor_hit_rects(win, header_height);
+        let close = close_rect(header_rect(win, header_height));
+        let buttons = close.union(close.translate(vec2(-(close.width() + BUTTON_GAP), 0.0)));
         for (i, (_, a)) in hits.iter().enumerate() {
             assert!(a.intersect(buttons).area() <= 0.0, "{a:?} covers the gear or close button");
             for (_, b) in &hits[i + 1..] {
@@ -746,6 +756,7 @@ mod tests {
     fn chrome<'a>(badges: &'a [&'a str], reference_time: Option<&'a str>) -> Chrome<'a> {
         Chrome {
             opacity: 0.8,
+            header_height: GRAPH_HEADER_HEIGHT,
             locked: false,
             settings_open: false,
             reference_time,

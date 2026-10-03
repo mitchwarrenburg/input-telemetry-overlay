@@ -24,7 +24,7 @@ use ito::ui::theme::{self, Weight};
 
 /// The page behind the overlay in the prototype.
 const BACKDROP: Color32 = Color32::from_rgb(0x0b, 0x0f, 0x12);
-const HEADER_HEIGHT: f32 = 26.0;
+const HEADER_HEIGHT: f32 = 20.0;
 const MARGIN: f32 = 10.0;
 /// Frames to render a case before capturing it (fonts load, layout settles).
 const SETTLE_FRAMES: u32 = 3;

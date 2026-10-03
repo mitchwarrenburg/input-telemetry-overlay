@@ -14,7 +14,7 @@ use crate::settings::{Settings, WindowRect};
 use crate::trace::LiveTrace;
 use crate::ui::cue_view::{self, CueFrame, CueIntent};
 use crate::ui::graph::CarNow;
-use crate::ui::overlay::{Chrome, MARGIN};
+use crate::ui::overlay::{Chrome, HEADER_HEIGHT, MARGIN};
 
 /// Unique among this program's windows: the native window is found by it.
 const TITLE: &str = "Input Telemetry Overlay: brake point";
@@ -178,6 +178,7 @@ impl CueWindow {
 
         let chrome = Chrome {
             opacity: settings.cue_bg_opacity / 100.0,
+            header_height: HEADER_HEIGHT,
             locked: settings.locked,
             settings_open,
             reference_time: None,

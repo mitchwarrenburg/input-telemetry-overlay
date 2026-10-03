@@ -25,7 +25,7 @@ use crate::settings::{self, Settings, SettingsTab, WindowRect};
 use crate::telemetry::iracing::IracingReader;
 use crate::telemetry::{SessionInfo, TelemetryEvent};
 use crate::ui::graph::{self, BrakePoints, GraphScene, LabelOptions};
-use crate::ui::overlay::{self, Chrome, HEADER_HEIGHT, Intent};
+use crate::ui::overlay::{self, Chrome, GRAPH_HEADER_HEIGHT, Intent};
 use crate::ui::settings_panel::{self, ConnectionState, Owner, PanelAction, PanelContext, PanelOutput};
 use crate::ui::theme;
 
@@ -489,6 +489,7 @@ impl OverlayApp {
         let badges: Vec<&str> = [ref_badge, self.demo.as_ref().map(|_| "DEMO")].into_iter().flatten().collect();
         let chrome = Chrome {
             opacity: self.settings.bg_opacity / 100.0,
+            header_height: GRAPH_HEADER_HEIGHT,
             locked: self.settings.locked,
             settings_open: self.settings_open && self.settings_owner == Owner::Graph,
             reference_time: lap_time.as_deref(),
@@ -515,7 +516,7 @@ impl OverlayApp {
                 mode: self.settings.label_mode,
                 min: self.settings.label_min / 100.0,
             },
-            header_height: HEADER_HEIGHT,
+            header_height: GRAPH_HEADER_HEIGHT,
             obstacles: &header.obstacles,
             message: self.graph_message(),
             brake_points: self.settings.cue_graph.then(|| {

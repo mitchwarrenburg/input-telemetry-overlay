@@ -16,9 +16,10 @@ const TIME_STEPS: [f64; 5] = [0.5, 1.0, 2.0, 5.0, 10.0];
 const MAX_LAPS_IN_VIEW: f64 = 16.0;
 /// More ticks than this means a nonsensical window: none are made.
 const MAX_TICKS: f64 = 200.0;
-/// Reference peak labels sit in a row (the rail) between the header and the plot, so
-/// they never cover a trace at 100 %: the plot moves down this much to make room.
-pub const RAIL_ROOM: f32 = 6.0;
+/// Room between the header and the plot's top edge.
+const PLOT_GAP: f32 = 3.0;
+/// Reference peak labels sit in a row (the rail) along the header's lower edge, between
+/// its items, so they never cover a trace at 100 % and cost the plot no height.
 /// A rail label's height, and the gap under the rail to the plot's top edge.
 pub const RAIL_H: f32 = 13.0;
 const RAIL_GAP: f32 = 2.0;
@@ -44,12 +45,11 @@ pub struct PlotLayout {
 }
 
 impl PlotLayout {
-    /// `rail`: reference peak labels are shown, in their row above the plot. `None` when
-    /// the panel is too small to plot anything.
-    pub fn new(panel: Rect, header_height: f32, rail: bool) -> Option<Self> {
+    /// `None` when the panel is too small to plot anything.
+    pub fn new(panel: Rect, header_height: f32) -> Option<Self> {
         let compact = panel.width() < 400.0;
         let x_band = panel.height() >= 118.0;
-        let top = panel.top() + header_height + 8.0 + if rail { RAIL_ROOM } else { 0.0 };
+        let top = panel.top() + header_height + PLOT_GAP;
         let plot = Rect::from_min_max(
             pos2(panel.left() + if compact { 26.0 } else { 32.0 }, top),
             pos2(panel.right() - 10.0, panel.bottom() - if x_band { 20.0 } else { 8.0 }),
@@ -312,10 +312,11 @@ impl XBand {
 
 /// Places the reference peak labels on the rail above the plot, nearest the car first
 /// (a peak ahead counts as half as far: it's the one coming). Each is centred over its
-/// peak, or nudged up to 8 pt aside when that would crowd one placed before; otherwise
-/// it's left off, and its dotted line still shows. `peaks`: each peak's x and its label's
-/// width. Returns each label's box, in the order given.
-pub fn place_rail(plot: Rect, cursor_x: f32, peaks: &[(f32, f32)]) -> Vec<Option<Rect>> {
+/// peak, or nudged up to 8 pt aside when that would crowd one placed before or one of
+/// the header's items (`obstacles`); otherwise it's left off, and its dotted line still
+/// shows. `peaks`: each peak's x and its label's width. Returns each label's box, in the
+/// order given.
+pub fn place_rail(plot: Rect, cursor_x: f32, peaks: &[(f32, f32)], obstacles: &[Rect]) -> Vec<Option<Rect>> {
     let top = plot.top() - RAIL_GAP - RAIL_H;
     let near = |x: f32| if x >= cursor_x { (x - cursor_x) * 0.5 } else { cursor_x - x };
     let mut order: Vec<usize> = (0..peaks.len()).collect();
@@ -327,7 +328,8 @@ pub fn place_rail(plot: Rect, cursor_x: f32, peaks: &[(f32, f32)]) -> Vec<Option
         let spot = [0.0, -4.0, 4.0, -8.0, 8.0].into_iter().find_map(|dx| {
             let left = fit(x - w / 2.0 + dx, plot.left(), plot.right() - w);
             let r = Rect::from_min_size(pos2(left, top), vec2(w, RAIL_H));
-            (!placed.iter().any(|q| overlaps(*q, r, 3.0))).then_some(r)
+            let clear = !placed.iter().any(|q| overlaps(*q, r, 3.0)) && !obstacles.iter().any(|q| overlaps(*q, r, 1.0));
+            clear.then_some(r)
         });
         if let Some(r) = spot {
             placed.push(r);
@@ -386,7 +388,7 @@ mod tests {
     }
 
     fn layout(w: f32, h: f32) -> PlotLayout {
-        PlotLayout::new(panel(w, h), 26.0, false).unwrap()
+        PlotLayout::new(panel(w, h), 20.0).unwrap()
     }
 
     /// The prototype's defaults: 500 m behind and ahead.
@@ -401,7 +403,7 @@ mod tests {
     #[test]
     fn plot_insets_follow_panel_size() {
         let l = layout(680.0, 170.0);
-        assert_eq!(l.plot, Rect::from_min_max(pos2(42.0, 44.0), pos2(680.0, 160.0)));
+        assert_eq!(l.plot, Rect::from_min_max(pos2(42.0, 33.0), pos2(680.0, 160.0)));
         assert!(!l.compact && l.x_band);
 
         let l = layout(300.0, 190.0);
@@ -412,11 +414,8 @@ mod tests {
         assert_eq!(l.plot.bottom(), 102.0);
         assert!(!l.x_band);
 
-        assert!(PlotLayout::new(panel(70.0, 170.0), 26.0, false).is_none());
-        assert!(PlotLayout::new(panel(680.0, 50.0), 26.0, false).is_none());
-
-        let railed = PlotLayout::new(panel(680.0, 170.0), 26.0, true).unwrap();
-        assert_eq!(railed.plot.top(), 44.0 + RAIL_ROOM, "moved down for the rail");
+        assert!(PlotLayout::new(panel(70.0, 170.0), 20.0).is_none());
+        assert!(PlotLayout::new(panel(680.0, 40.0), 20.0).is_none());
     }
 
     #[test]
@@ -425,7 +424,7 @@ mod tests {
         assert_eq!(s.x(-500.0), 42.0);
         assert_eq!(s.x(0.0), 361.0);
         assert_eq!(s.x(500.0), 680.0);
-        assert_eq!((s.y(1.0), s.y(0.0)), (44.0, 160.0));
+        assert_eq!((s.y(1.0), s.y(0.0)), (33.0, 160.0));
         assert_eq!((s.behind(), s.ahead()), (500.0, 500.0));
 
         let plot = layout(680.0, 170.0).plot;
@@ -578,28 +577,40 @@ mod tests {
     fn rail_labels_centre_over_their_peaks_nearest_first() {
         let l = layout(680.0, 170.0);
         let cursor = 361.0;
-        let boxes = place_rail(l.plot, cursor, &[(300.0, 30.0), (500.0, 30.0)]);
+        let boxes = place_rail(l.plot, cursor, &[(300.0, 30.0), (500.0, 30.0)], &[]);
         let a = boxes[0].unwrap();
         assert_eq!(a, Rect::from_min_size(pos2(285.0, l.plot.top() - 2.0 - RAIL_H), vec2(30.0, RAIL_H)));
         assert_eq!(boxes[1].unwrap().center().x, 500.0);
         // Three peaks within 40 pt: the nearest (ahead counts half) keeps its spot; the
         // others have no room within 8 pt of it, so they are left off.
-        let close = place_rail(l.plot, cursor, &[(340.0, 30.0), (380.0, 30.0), (362.0, 30.0)]);
+        let close = place_rail(l.plot, cursor, &[(340.0, 30.0), (380.0, 30.0), (362.0, 30.0)], &[]);
         assert_eq!(close[2].unwrap().center().x, 362.0, "1 pt ahead: nearest");
         let kept: Vec<Rect> = close.iter().flatten().copied().collect();
         for (i, a) in kept.iter().enumerate() {
             assert!(kept[i + 1..].iter().all(|b| !overlaps(*a, *b, 3.0)), "{kept:?}");
         }
         assert!(close[0].is_none() && close[1].is_none(), "no room within 8 pt: {close:?}");
-        let nudged = place_rail(l.plot, cursor, &[(380.0, 30.0), (348.0, 30.0)]);
+        let nudged = place_rail(l.plot, cursor, &[(380.0, 30.0), (348.0, 30.0)], &[]);
         assert_eq!(nudged[1].unwrap().center().x, 344.0, "4 pt aside is enough");
+    }
+
+    #[test]
+    fn rail_labels_step_around_header_items() {
+        let l = layout(680.0, 170.0);
+        let rail_top = l.plot.top() - 2.0 - RAIL_H;
+        let title = Rect::from_min_max(pos2(20.0, rail_top - 6.0), pos2(200.0, rail_top + 6.0));
+        let gear = Rect::from_min_max(pos2(600.0, rail_top - 6.0), pos2(640.0, rail_top + 8.0));
+        let boxes = place_rail(l.plot, 400.0, &[(195.0, 30.0), (230.0, 30.0), (620.0, 30.0)], &[title, gear]);
+        assert!(boxes[0].is_none(), "under the title, even 8 pt aside: {boxes:?}");
+        assert_eq!(boxes[1].unwrap().center().x, 230.0, "clear of the title");
+        assert!(boxes[2].is_none(), "under the gear: {boxes:?}");
     }
 
     #[test]
     fn rail_labels_stay_over_the_plot() {
         let l = layout(300.0, 190.0);
         for x in [l.plot.left() - 20.0, l.plot.left(), l.plot.right(), l.plot.right() + 20.0] {
-            let r = place_rail(l.plot, l.plot.center().x, &[(x, 30.0)])[0].unwrap();
+            let r = place_rail(l.plot, l.plot.center().x, &[(x, 30.0)], &[])[0].unwrap();
             assert!(r.left() >= l.plot.left() && r.right() <= l.plot.right(), "{r:?}");
         }
     }
