@@ -42,6 +42,9 @@ const SAVE_DELAY: Duration = Duration::from_millis(500);
 const READOUT_HOLD: Duration = Duration::from_millis(800);
 /// egui takes one predicted frame off `request_repaint_after` delays; add it back.
 const FRAME: Duration = Duration::from_millis(17);
+/// The windows stay this long after you stop driving, so a blip in iRacing's car state
+/// doesn't flash them off.
+const OUT_OF_CAR_HOLD: Duration = Duration::from_secs(1);
 const WAITING: (&str, &str) = ("WAITING FOR IRACING", "Start a session, or turn on demo mode in settings");
 const NO_REFERENCE: (&str, &str) = ("NO REFERENCE LAP", "Drop a Garage 61 CSV here, or load one in ⚙ settings");
 
@@ -150,6 +153,12 @@ pub struct OverlayApp {
     readout_until: Option<Instant>,
     screenshots: Option<Screenshots>,
     cue_window: CueWindow,
+    /// When you were last seen driving in iRacing.
+    last_in_car: Option<Instant>,
+    /// The overlay and the brake point window are shown this frame.
+    visible: bool,
+    /// Mouse passthrough as last sent to the overlay window.
+    passthrough: Option<bool>,
 }
 
 impl OverlayApp {
@@ -205,6 +214,9 @@ impl OverlayApp {
             readout_until: None,
             screenshots: Screenshots::new(opts.screenshot, opts.settings_screenshot, opts.cue_screenshot),
             cue_window,
+            last_in_car: None,
+            visible: true,
+            passthrough: None,
         };
         if let Some(tab) = opts.open_settings {
             app.settings_owner = if tab.is_cue() { Owner::Cue } else { Owner::Graph };
@@ -423,7 +435,6 @@ impl OverlayApp {
         let old = std::mem::replace(&mut self.applied, self.settings.clone());
         let new = &self.applied;
         if old.locked != new.locked {
-            ctx.send_viewport_cmd(ViewportCommand::MousePassthrough(new.locked));
             self.desktop.set_locked(new.locked);
         }
         if old.update_hz != new.update_hz
@@ -617,12 +628,35 @@ impl OverlayApp {
         }
     }
 
+    /// Whether the windows show: always, unless they hide out of the car; then while
+    /// you're driving in iRacing (and for [`OUT_OF_CAR_HOLD`] after), with the settings
+    /// open, or with `--demo`. Asks for a repaint to hide them once the hold runs out.
+    fn update_visible(&mut self, ctx: &egui::Context, now: Instant) {
+        if self.live && self.feed.driving().is_some() {
+            self.last_in_car = Some(now);
+        }
+        let hold_until = self.last_in_car.map(|t| t + OUT_OF_CAR_HOLD).filter(|until| now < *until);
+        self.visible = !self.settings.hide_out_of_car || self.force_demo || self.settings_open || hold_until.is_some();
+        if let Some(until) = hold_until {
+            ctx.request_repaint_after(until - now + FRAME);
+        }
+    }
+
+    /// Hidden, the overlay window stays (it's transparent) but lets clicks through.
+    fn set_passthrough(&mut self, ctx: &egui::Context) {
+        let passthrough = self.settings.locked || !self.visible;
+        if self.passthrough != Some(passthrough) {
+            ctx.send_viewport_cmd(ViewportCommand::MousePassthrough(passthrough));
+            self.passthrough = Some(passthrough);
+        }
+    }
+
     /// Runs the brake point countdown, then shows its window when it's on.
     fn brake_point(&mut self, ctx: &egui::Context, frame: &eframe::Frame, now: Instant) {
         let lap = cue_reference(&self.reference, self.session.as_ref());
         let (car, live, length) = (self.feed.driving(), self.feed.trace(), self.feed.track_length());
         self.cue_window.update(car, live, lap, length, &self.settings, now);
-        if !self.settings.cue_on {
+        if !self.settings.cue_on || !self.visible {
             self.cue_window.hide();
             return;
         }
@@ -662,7 +696,9 @@ impl eframe::App for OverlayApp {
         platform::keep_no_activate(frame);
         self.handle_desktop_events(ctx, frame);
         self.drain_telemetry(now);
-        if let Some(demo) = &mut self.demo {
+        self.update_visible(ctx, now);
+        // Hidden, the demo waits: nobody's watching.
+        if let Some(demo) = self.demo.as_mut().filter(|_| self.visible) {
             demo.advance(now, self.settings.update_hz, &mut self.feed);
             ctx.request_repaint_after(Demo::repaint_delay(self.settings.update_hz));
         }
@@ -673,9 +709,13 @@ impl eframe::App for OverlayApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let now = Instant::now();
+        self.update_visible(&ctx, now);
+        self.set_passthrough(&ctx);
         self.track_window(&ctx, frame, now);
         self.brake_point(&ctx, frame, now);
-        if let Some(intent) = self.paint_overlay(ui, ui.max_rect(), now) {
+        if self.visible
+            && let Some(intent) = self.paint_overlay(ui, ui.max_rect(), now)
+        {
             self.on_intent(intent, &ctx, frame);
         }
         if let Some(path) = ctx.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf())) {

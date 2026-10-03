@@ -41,8 +41,11 @@ by itself.
 Windows 10 or 11 with OpenGL 2 or newer (any GPU from the last decade). Uninstalling
 keeps your settings and saved laps in `%APPDATA%\input-telemetry-overlay`.
 
-With iRacing closed, the overlay runs a demo lap so you can position it and try the
-settings. Turn that off in **Settings → Display**.
+Both windows stay hidden until you're driving in iRacing; they show while you're on
+track, and while the settings are open, so you can position them. Open the settings
+from the tray icon. To keep them on screen all the time, turn off **Hide when not in the
+car** in **Settings → Display**. With iRacing closed and the settings open, the overlay
+runs a demo lap so you can try the settings; turn that off in **Settings → Display** too.
 
 ## Load a reference lap from Garage 61
 
@@ -129,12 +132,12 @@ drawn on it keeps a dark backing so it reads over a bright sim.
 
 ### Settings
 
-Each window's gear opens its own settings. The Reference tab, the lock and the brake
-point window's on/off are in both.
+Each window's gear opens its own settings. The Reference tab, the lock, hide when not in
+the car and the brake point window's on/off are in both.
 
 | Tab | What's there |
 | --- | --- |
-| Display | Background and reference opacity, lock, unlock shortcut, demo mode, reset size & position, the brake point window on or off |
+| Display | Background and reference opacity, lock, unlock shortcut, hide when not in the car, demo mode, reset size & position, the brake point window on or off |
 | Labels | Brake peak labels on or off; for your laps, the reference or both; minimum peak; the brake point marks |
 | Timing | X-axis in distance or time; history behind the car; look-ahead; update rate (30 or 60 Hz) |
 | Reference | The current reference and how it matches the session, the saved laps, loading CSVs, auto-pick |

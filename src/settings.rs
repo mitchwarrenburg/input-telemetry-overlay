@@ -96,6 +96,8 @@ pub struct Settings {
     pub auto_reference: bool,
     /// Run the simulated driver while iRacing isn't running.
     pub demo_when_idle: bool,
+    /// Both windows show only while you're driving in iRacing (or the settings are open).
+    pub hide_out_of_car: bool,
     /// Global shortcut that locks/unlocks the overlay (it's click-through while locked).
     pub unlock_hotkey: String,
     /// Last settings tab shown from the graph's gear.
@@ -153,6 +155,7 @@ impl Default for Settings {
             show_ref: true,
             auto_reference: true,
             demo_when_idle: true,
+            hide_out_of_car: true,
             unlock_hotkey: "Ctrl+Alt+Shift+O".into(),
             tab: SettingsTab::Display,
             window: None,

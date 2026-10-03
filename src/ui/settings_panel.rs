@@ -342,6 +342,9 @@ fn row<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
 
 // ---- Display ----
 
+/// The hide-when-not-in-the-car switch's hint, on both windows' tabs.
+const HIDE_HINT: &str = "Both windows; they show while you drive, or while settings are open";
+
 fn display_tab(ui: &mut Ui, s: &mut Settings, cx: &PanelContext, actions: &mut Vec<PanelAction>) {
     section(ui, "Opacity");
     ui.add(Slider::new("Background", &mut s.bg_opacity, 0.0..=100.0).unit("%"));
@@ -359,6 +362,7 @@ fn display_tab(ui: &mut Ui, s: &mut Settings, cx: &PanelContext, actions: &mut V
             widgets::error_text(ui, e);
         }
     });
+    ui.add(Switch::new(&mut s.hide_out_of_car, "Hide when not in the car").hint(HIDE_HINT));
     ui.add(Switch::new(&mut s.demo_when_idle, "Demo when iRacing isn't running"));
     if ui.add(Button::new("Reset size & position").fill_width()).clicked() {
         actions.push(PanelAction::ResetLayout);
@@ -513,6 +517,7 @@ fn window_tab(ui: &mut Ui, s: &mut Settings, actions: &mut Vec<PanelAction>) {
     divider(ui);
     section(ui, "Layout");
     ui.add(Switch::new(&mut s.locked, "Lock size & position").hint("Both windows"));
+    ui.add(Switch::new(&mut s.hide_out_of_car, "Hide when not in the car").hint(HIDE_HINT));
     if ui.add_enabled(s.cue_on, Button::new("Reset size & position").fill_width()).clicked() {
         actions.push(PanelAction::ResetCueLayout);
     }
