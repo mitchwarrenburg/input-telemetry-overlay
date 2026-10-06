@@ -121,8 +121,8 @@ forward slashes for remote Windows paths (`C:/...` or `/C:/...`) and absolute
 paths for the MacBook. At the interactive SFTP prompt, use forward slashes for
 local paths too; backslashes are rejected before a command runs.
 Directory transfers can leave completed files behind if interrupted; inspect the
-destination before retrying with a new path. Downloads on macOS start with private
-user permissions; transfers do not copy the source file's permissions.
+destination before retrying with a new path. Transfers do not copy the source
+file's permissions.
 
 Agents should use `check`, `ls`, `exec` and `get` for bounded tasks, then verify
 the retrieved files have the expected contents and provenance. For an interactive
