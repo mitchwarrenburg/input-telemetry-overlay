@@ -7,3 +7,7 @@
 
 # Per-checkout CodeGraph index and runtime files.
 /.codegraph/
+
+# Python helper caches.
+__pycache__/
+*.py[cod]

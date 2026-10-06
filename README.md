@@ -231,3 +231,7 @@ Not affiliated with iRacing or Garage 61.
 
 See [CodeGraph setup and review context](docs/codegraph.md) for the project-local
 Claude/Codex server, per-checkout indexing and CLI commands.
+
+## Home network
+
+[Home network access](docs/home-network.md) covers remote shells, file transfers and collecting iRacing data from the primary machine.
