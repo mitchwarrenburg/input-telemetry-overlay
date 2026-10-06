@@ -19,6 +19,7 @@ network = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(network)
 TEST_HOST_KEY_BITS = 1024
 TEST_SETUP_FAILURE_CODE = 73
+TEST_DARWIN_ENOTSUP = 45
 
 
 class FakeSFTP:
@@ -121,6 +122,7 @@ class NetworkTests(unittest.TestCase):
         listing.assert_called_once_with(self.sftp, "/home/user")
         download.assert_called_once_with(self.sftp, "/home/user/remote", "local copy", recursive=False)
         upload.assert_called_once_with(self.sftp, "local source", "/home/user/uploaded", recursive=False, windows_destination=False)
+        self.assertEqual(self.sftp.cwd, "/home/user")
 
     def test_prompt_rejects_backslashes_before_parsing_or_transfer(self):
         commands = [r"get remote.ibt D:\captures\file.ibt", "exit"]
@@ -187,8 +189,8 @@ class NetworkTests(unittest.TestCase):
         source = self.directory / "staged"
         target = self.directory / "target"
         source.write_bytes(b"new")
-        with patch.object(network.os, "name", "posix"), patch.object(network.errno, "ENOTSUP", 45), \
-                patch.object(network.os, "link", side_effect=OSError(45, "Darwin ENOTSUP")):
+        with patch.object(network.os, "name", "posix"), patch.object(network.errno, "ENOTSUP", TEST_DARWIN_ENOTSUP), \
+                patch.object(network.os, "link", side_effect=OSError(TEST_DARWIN_ENOTSUP, "Darwin ENOTSUP")):
             network.publish_local(source, target)
             self.assertEqual(target.read_bytes(), b"new")
             with self.assertRaises(FileExistsError):
@@ -197,8 +199,8 @@ class NetworkTests(unittest.TestCase):
 
     def test_windows_key_records_preserve_a_grave_and_virtual_arrows(self):
         self.assertEqual(network.windows_key_text("à", 0, 1) + network.windows_key_text("H", 0, 1), "àH")
-        self.assertEqual(network.windows_key_text("\0", 0x26, 1), "\x1b[A")
-        self.assertEqual(network.windows_key_text("\0", 0x25, 2), "\x1b[D\x1b[D")
+        self.assertEqual(network.windows_key_text("\0", network.WINDOWS_VK_UP, 1), "\x1b[A")
+        self.assertEqual(network.windows_key_text("\0", network.WINDOWS_VK_LEFT, 2), "\x1b[D\x1b[D")
         self.assertEqual(network.windows_key_text("\0", 0, 1), "")
         self.assertEqual(network.windows_key_text("H", 0, 1, down=False), "")
         decoder = network.codecs.getincrementaldecoder("utf-16-le")("replace")
@@ -207,7 +209,6 @@ class NetworkTests(unittest.TestCase):
             text = network.windows_key_text(surrogate, network.WINDOWS_VK_MENU, 1, down=False)
             parts.append(decoder.decode(text.encode("utf-16-le", "surrogatepass")))
         self.assertEqual("".join(parts), "😀")
-        self.assertEqual(self.sftp.cwd, "/home/user")
 
     def test_download_and_upload_tree_with_unicode(self):
         self.sftp.files.update({"/source": None, "/source/sub dir": None, "/source/sub dir/café.txt": b"\x00hello\xff"})
@@ -520,6 +521,45 @@ class NativeSetupStub {
                         if redirect == "2>&1":
                             for stage in stages:
                                 self.assertIn("benign-warning-" + stage, result.stdout)
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell launcher failures and native status scope")
+    def test_powershell_launcher_fails_closed_and_preserves_native_status(self):
+        for redirect in ("", "2>&1", "2>$null"):
+            for scenario in ("baseline-zero", "baseline-nonzero", "missing-localappdata", "invalid-venv"):
+                with self.subTest(redirect=redirect, scenario=scenario), tempfile.TemporaryDirectory(dir=self.directory) as temporary:
+                    root = Path(temporary).resolve()
+                    wrapper = root / "home-network.ps1"
+                    shutil.copyfile(Path(__file__).with_name("home-network.ps1"), wrapper)
+                    (root / "home_network.py").write_text(
+                        "import os,pathlib,sys; pathlib.Path(__file__).with_name('ran').write_text('yes'); "
+                        "print('helper-output'); print('helper-error',file=sys.stderr); "
+                        "sys.exit(int(os.environ['HOME_NETWORK_TEST_RESULT']))", encoding="utf-8")
+                    expected_status = 0 if scenario == "baseline-zero" else 37
+                    environment = dict(os.environ, LOCALAPPDATA=str(root / "app-data"),
+                                       HOME_NETWORK_TEST_RESULT=str(expected_status))
+                    if scenario == "missing-localappdata":
+                        del environment["LOCALAPPDATA"]
+                    elif scenario == "invalid-venv":
+                        executable = root / "app-data" / "HomeNetwork" / "venv-v1" / "Scripts" / "python.exe"
+                        executable.parent.mkdir(parents=True)
+                        executable.write_bytes(b"not an executable")
+                    command = "$captured = & '" + str(wrapper).replace("'", "''") + "' " + redirect
+                    command += "; $status = $LASTEXITCODE; $captured | ForEach-Object { Write-Output $_.ToString() }; exit $status"
+                    result = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+                                            env=environment, capture_output=True, text=True)
+                    if scenario.startswith("baseline"):
+                        self.assertEqual(result.returncode, expected_status, result.stdout + result.stderr)
+                        self.assertTrue((root / "ran").exists())
+                        self.assertIn("helper-output", result.stdout)
+                        if redirect == "2>&1":
+                            self.assertIn("helper-error", result.stdout)
+                        elif redirect == "2>$null":
+                            self.assertNotIn("helper-error", result.stdout + result.stderr)
+                        else:
+                            self.assertIn("helper-error", result.stderr)
+                    else:
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertFalse((root / "ran").exists())
 
 
 if __name__ == "__main__":
