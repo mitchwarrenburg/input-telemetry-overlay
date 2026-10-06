@@ -28,24 +28,35 @@ HOSTS = (
     {"name": "Mitch's MacBook Pro", "host": "mitch-mac.local", "user": "mitchwarrenburg", "os": "macos",
      "aliases": ("macbook", "mitch-mac", "mitch-mac.local", "Mac.attlocal.net")},
 )
+# LAN waits and polling intervals, in seconds: chosen for a home network, not measured.
 CONNECT_TIMEOUT = 15
 AUTH_TIMEOUT = 30
-SSH_PORT = 22
 KEEPALIVE_SECONDS = 30
-IO_CHUNK_SIZE = 64 * 1024
 CHANNEL_POLL_SECONDS = 0.01
 INPUT_POLL_SECONDS = 0.02
+# The registered SSH port, a chosen transfer buffer and the size assumed when no terminal reports one.
+SSH_PORT = 22
+IO_CHUNK_SIZE = 64 * 1024
 DEFAULT_TERMINAL_SIZE = (100, 30)
+# OpenSSH exits 255 for its own failures; shells report an interrupt as 128 + SIGINT (2) = 130.
+MISSING_EXIT_STATUS_CODE = 255
+INTERRUPTED_EXIT_CODE = 130
+# Filenames are refused below U+0020, the end of the C0 control characters.
+C0_CONTROL_LIMIT = 32
+# Win32 file-system values: the reparse-point attribute and the reserved COM1-9/LPT1-9 devices.
+WINDOWS_REPARSE_POINT_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+WINDOWS_DOS_PORT_NUMBERS = range(1, 10)
+# Win32 console API values: standard handles, mode flags, the key record type and its union size.
+WINDOWS_STDIN_HANDLE = -10
+WINDOWS_STDOUT_HANDLE = -11
 WINDOWS_VT_INPUT = 0x0200
 WINDOWS_VT_OUTPUT = 0x0004
 WINDOWS_INPUT_LINE_ECHO_SIGNALS = 0x0007
-WINDOWS_STDIN_HANDLE = -10
-WINDOWS_STDOUT_HANDLE = -11
-WINDOWS_REPARSE_POINT_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-WINDOWS_DOS_PORT_NUMBERS = range(1, 10)
-MISSING_EXIT_STATUS_CODE = 255
-INTERRUPTED_EXIT_CODE = 130
 WINDOWS_KEY_EVENT = 0x0001
+WINDOWS_EVENT_UNION_BYTES = 16
+# Chosen bound on console records read per poll, not measured.
+WINDOWS_INPUT_BATCH_SIZE = 64
+# Win32 virtual-key codes for keys which carry no character, and the sequences xterm sends for them.
 WINDOWS_VK_MENU = 0x12
 WINDOWS_VK_PRIOR = 0x21
 WINDOWS_VK_NEXT = 0x22
@@ -57,19 +68,10 @@ WINDOWS_VK_RIGHT = 0x27
 WINDOWS_VK_DOWN = 0x28
 WINDOWS_VK_INSERT = 0x2D
 WINDOWS_VK_DELETE = 0x2E
-WINDOWS_INPUT_BATCH_SIZE = 64
-WINDOWS_EVENT_UNION_BYTES = 16
 WINDOWS_KEY_SEQUENCES = {
-    WINDOWS_VK_PRIOR: "\x1b[5~",
-    WINDOWS_VK_NEXT: "\x1b[6~",
-    WINDOWS_VK_END: "\x1b[F",
-    WINDOWS_VK_HOME: "\x1b[H",
-    WINDOWS_VK_LEFT: "\x1b[D",
-    WINDOWS_VK_UP: "\x1b[A",
-    WINDOWS_VK_RIGHT: "\x1b[C",
-    WINDOWS_VK_DOWN: "\x1b[B",
-    WINDOWS_VK_INSERT: "\x1b[2~",
-    WINDOWS_VK_DELETE: "\x1b[3~",
+    WINDOWS_VK_PRIOR: "\x1b[5~", WINDOWS_VK_NEXT: "\x1b[6~", WINDOWS_VK_END: "\x1b[F", WINDOWS_VK_HOME: "\x1b[H",
+    WINDOWS_VK_LEFT: "\x1b[D", WINDOWS_VK_UP: "\x1b[A", WINDOWS_VK_RIGHT: "\x1b[C", WINDOWS_VK_DOWN: "\x1b[B",
+    WINDOWS_VK_INSERT: "\x1b[2~", WINDOWS_VK_DELETE: "\x1b[3~",
 }
 
 
@@ -331,7 +333,7 @@ def shell(client):
 
 def safe_name(name, windows=None):
     if (not name or name in (".", "..") or any(char in name for char in "/\\:\0")
-            or any(ord(char) < 32 for char in name)):
+            or any(ord(char) < C0_CONTROL_LIMIT for char in name)):
         raise ValueError("Unsafe transfer entry: %r" % name)
     windows = os.name == "nt" if windows is None else windows
     if windows and (name[-1:] in (".", " ") or any(char in name for char in '<>"|?*')
@@ -622,15 +624,15 @@ def main(argv=None):
     try:
         host = resolve_host(args.machine)
         if args.action == "info":
-            print("%s\nSSH/SFTP: %s@%s:22\nRemote shell: %s" %
-                  (host["name"], host["user"], host["host"], "PowerShell" if host["os"] == "windows" else "macOS login shell"))
+            print("%s\nSSH/SFTP: %s@%s:%d\nRemote shell: %s" %
+                  (host["name"], host["user"], host["host"], SSH_PORT, "PowerShell" if host["os"] == "windows" else "macOS login shell"))
             return 0
         if args.action == "smb":
             if host["name"] != "FRANK":
                 raise ValueError("Shared drives are on FRANK. Run 'FRANK smb'.")
             for drive in ("C", "D", "E"):
-                print("%s (%s): \\\\FRANK\\%s | \\\\192.168.1.247\\%s | smb://192.168.1.247/%s" %
-                      (drive, "read-only" if drive == "C" else "read/write", drive, drive, drive))
+                print("%s (%s): \\\\FRANK\\%s | \\\\%s\\%s | smb://%s/%s" %
+                      (drive, "read-only" if drive == "C" else "read/write", drive, host["host"], drive, host["host"], drive))
             return 0
         if args.action == "shell" and (not sys.stdin.isatty() or not sys.stdout.isatty()):
             raise ValueError("shell requires an interactive terminal. Agents should use exec with one quoted command.")

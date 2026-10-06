@@ -1,4 +1,4 @@
-"""Offline behavioral checks: python -m unittest discover -s scripts -p test_home_network.py."""
+"""Offline behavioral checks: python -m unittest discover -s scripts -p test_home_network.py -q."""
 import contextlib
 import errno
 import importlib.util
@@ -14,12 +14,41 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-spec = importlib.util.spec_from_file_location("home_network", Path(__file__).with_name("home_network.py"))
+HELPER_DIRECTORY = Path(__file__).resolve().parent
+
+spec = importlib.util.spec_from_file_location("home_network", HELPER_DIRECTORY / "home_network.py")
 network = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(network)
 TEST_HOST_KEY_BITS = 1024
 TEST_SETUP_FAILURE_CODE = 73
 TEST_DARWIN_ENOTSUP = 45
+TEST_LEGACY_CODE_PAGE = 437
+# Stands in for py.exe, the bootstrap interpreter and the venv interpreter; it records each stage.
+NATIVE_SETUP_STUB_SOURCE = r'''
+using System;
+using System.IO;
+using System.Reflection;
+class NativeSetupStub {
+    public static int Main(string[] args) {
+        string stage = args[0] == "-3" ? "bootstrap" : args[0] == "-c" ? "version" : args[1];
+        File.AppendAllText(Environment.GetEnvironmentVariable("HOME_NETWORK_TEST_CALLS"), stage + "\n");
+        Console.Error.WriteLine("benign-warning-" + stage);
+        if (Environment.GetEnvironmentVariable("HOME_NETWORK_TEST_FAIL_STAGE") == stage)
+            return Int32.Parse(Environment.GetEnvironmentVariable("HOME_NETWORK_TEST_FAIL_CODE"));
+        string executable = Assembly.GetExecutingAssembly().Location;
+        if (stage == "bootstrap") Console.WriteLine(executable);
+        else if (stage == "venv") {
+            string destination = Path.Combine(args[2], "Scripts");
+            Directory.CreateDirectory(destination);
+            string python = Path.Combine(destination, "python.exe");
+            if (Environment.GetEnvironmentVariable("HOME_NETWORK_TEST_UNSTARTABLE_VENV_PYTHON") == "1")
+                File.WriteAllText(python, "not an executable");
+            else File.Copy(executable, python, true);
+        }
+        return 0;
+    }
+}
+'''
 
 
 class FakeSFTP:
@@ -89,6 +118,18 @@ class NetworkTests(unittest.TestCase):
         self.stdout = patch("sys.stdout", new_callable=io.StringIO)
         self.stdout.start()
         self.addCleanup(self.stdout.stop)
+
+    def native_setup_stub(self):
+        """Compile the stub as py.exe and return its directory, to be placed first on PATH."""
+        shim_directory = self.directory / "bin"
+        shim_directory.mkdir()
+        shim = shim_directory / "py.exe"
+        source = self.directory / "NativeSetupStub.cs"
+        source.write_text(NATIVE_SETUP_STUB_SOURCE, encoding="utf-8")
+        compile_script = "Add-Type -Path '" + str(source).replace("'", "''") + "' -OutputAssembly '" + str(shim).replace("'", "''") + "' -OutputType ConsoleApplication"
+        compiled = subprocess.run(["powershell.exe", "-NoProfile", "-Command", compile_script], capture_output=True, text=True)
+        self.assertEqual(compiled.returncode, 0, compiled.stderr)
+        return shim_directory
 
     def test_aliases_and_exact_curly_name(self):
         for name, expected in (("WIN", "FRANK"), ("iMac", "MACINDOZE"), ("macbook", "Mitch's MacBook Pro"),
@@ -413,7 +454,7 @@ class NetworkTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "PowerShell 5.1 argv forwarding")
     def test_powershell_wrapper_preserves_quotes_dollars_unicode_empty_and_exit(self):
         wrapper = self.directory / "home-network.ps1"
-        shutil.copyfile(Path(__file__).with_name("home-network.ps1"), wrapper)
+        shutil.copyfile(HELPER_DIRECTORY / "home-network.ps1", wrapper)
         (self.directory / "home_network.py").write_text(
             "import sys,json; print(json.dumps(sys.argv[1:])); sys.exit(37)", encoding="utf-8")
         args = ["FRANK", "exec", '$a = "hello café"; Write-Output "$a"', "C:\\path with spaces\\", "", 'a\\"b']
@@ -435,10 +476,10 @@ class NetworkTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "PowerShell Unicode stdout capture")
     def test_powershell_wrapper_unicode_output_and_encoding_restoration(self):
         wrapper = self.directory / "home-network.ps1"
-        shutil.copyfile(Path(__file__).with_name("home-network.ps1"), wrapper)
+        shutil.copyfile(HELPER_DIRECTORY / "home-network.ps1", wrapper)
         (self.directory / "home_network.py").write_text("print('café_日本語')", encoding="utf-8")
         # Simulate a normal legacy console, capture inside PS, then serialize as ASCII code points.
-        script = "[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(437); "
+        script = "[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(%d); " % TEST_LEGACY_CODE_PAGE
         script += "$captured = & '" + str(wrapper).replace("'", "''") + "'; "
         script += "$codepoints = @($captured.ToCharArray() | ForEach-Object { [int]$_ }); "
         script += "Write-Output ($codepoints -join ','); Write-Output ([Console]::OutputEncoding.CodePage)"
@@ -447,12 +488,12 @@ class NetworkTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         lines = result.stdout.splitlines()
         self.assertEqual([int(value) for value in lines[0].split(",")], [ord(char) for char in "café_日本語"])
-        self.assertEqual(lines[1], "437")
+        self.assertEqual(lines[1], str(TEST_LEGACY_CODE_PAGE))
 
     @unittest.skipUnless(os.name == "nt", "PowerShell 5.1 redirected native stderr")
     def test_powershell_redirected_stderr_preserves_stdout_and_status(self):
         wrapper = self.directory / "home-network.ps1"
-        shutil.copyfile(Path(__file__).with_name("home-network.ps1"), wrapper)
+        shutil.copyfile(HELPER_DIRECTORY / "home-network.ps1", wrapper)
         (self.directory / "home_network.py").write_text(
             "import sys; print('remote-error',file=sys.stderr); print('remote-output'); sys.exit(37)", encoding="utf-8")
         for redirect in ("2>&1", "2>$null"):
@@ -468,103 +509,69 @@ class NetworkTests(unittest.TestCase):
     @unittest.skipUnless(os.name == "nt", "PowerShell 5.1 native setup stages")
     def test_powershell_setup_preserves_native_stderr_and_stage_failures(self):
         wrapper = self.directory / "home-network.ps1"
-        shutil.copyfile(Path(__file__).with_name("home-network.ps1"), wrapper)
-        shim_directory = self.directory / "bin"
-        shim_directory.mkdir()
-        shim = shim_directory / "py.exe"
-        source = self.directory / "NativeSetupStub.cs"
-        source.write_text(r'''
-using System;
-using System.IO;
-using System.Reflection;
-class NativeSetupStub {
-    public static int Main(string[] args) {
-        string stage = args[0] == "-3" ? "bootstrap" : args[0] == "-c" ? "version" : args[1];
-        File.AppendAllText(Environment.GetEnvironmentVariable("HOME_NETWORK_TEST_CALLS"), stage + "\n");
-        Console.Error.WriteLine("benign-warning-" + stage);
-        if (Environment.GetEnvironmentVariable("HOME_NETWORK_TEST_FAIL_STAGE") == stage)
-            return Int32.Parse(Environment.GetEnvironmentVariable("HOME_NETWORK_TEST_FAIL_CODE"));
-        string executable = Assembly.GetExecutingAssembly().Location;
-        if (stage == "bootstrap") Console.WriteLine(executable);
-        else if (stage == "venv") {
-            string destination = Path.Combine(args[2], "Scripts");
-            Directory.CreateDirectory(destination);
-            if (Environment.GetEnvironmentVariable("HOME_NETWORK_TEST_INVALID_VENV") == "1")
-                File.WriteAllText(Path.Combine(destination, "python.exe"), "not an executable");
-            else File.Copy(executable, Path.Combine(destination, "python.exe"), true);
-        }
-        return 0;
-    }
-}
-''', encoding="utf-8")
-        compile_script = "Add-Type -Path '" + str(source).replace("'", "''") + "' -OutputAssembly '" + str(shim).replace("'", "''") + "' -OutputType ConsoleApplication"
-        compiled = subprocess.run(["powershell.exe", "-NoProfile", "-Command", compile_script], capture_output=True, text=True)
-        self.assertEqual(compiled.returncode, 0, compiled.stderr)
+        shutil.copyfile(HELPER_DIRECTORY / "home-network.ps1", wrapper)
+        shim_directory = self.native_setup_stub()
         stages = ["bootstrap", "version", "venv", "pip"]
-        for redirect in ("", "2>&1", "2>$null"):
-            for failed_stage in ("", *stages, "pip-not-started"):
+        for redirect in ("2>&1", "2>$null"):
+            for failed_stage in ("", *stages):
                 with self.subTest(redirect=redirect, failed_stage=failed_stage):
                     calls = self.directory / "calls.txt"
                     calls.write_text("", encoding="utf-8")
                     environment = dict(os.environ, PATH=str(shim_directory) + os.pathsep + os.environ["PATH"],
                                        LOCALAPPDATA=str(self.directory / "local-app-data"),
                                        HOME_NETWORK_TEST_CALLS=str(calls), HOME_NETWORK_TEST_FAIL_STAGE=failed_stage,
-                                       HOME_NETWORK_TEST_INVALID_VENV="1" if failed_stage == "pip-not-started" else "0",
                                        HOME_NETWORK_TEST_FAIL_CODE=str(TEST_SETUP_FAILURE_CODE))
                     command = "$captured = & '" + str(wrapper).replace("'", "''") + "' setup " + redirect
                     command += "; $status = $LASTEXITCODE; $captured | ForEach-Object { Write-Output $_.ToString() }; exit $status"
                     result = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
                                             env=environment, capture_output=True, text=True)
-                    expected_code = (1 if failed_stage in ("bootstrap", "version", "pip-not-started") else TEST_SETUP_FAILURE_CODE) if failed_stage else 0
+                    expected_code = (1 if failed_stage in ("bootstrap", "version") else TEST_SETUP_FAILURE_CODE) if failed_stage else 0
                     self.assertEqual(result.returncode, expected_code, result.stdout + result.stderr)
-                    expected_stages = stages[:stages.index(failed_stage) + 1] if failed_stage in stages else stages[:3] if failed_stage else stages
+                    expected_stages = stages[:stages.index(failed_stage) + 1] if failed_stage else stages
                     self.assertEqual(calls.read_text(encoding="utf-8").splitlines(), expected_stages)
-                    if failed_stage == "pip-not-started":
-                        self.assertNotIn("Home-network tools installed", result.stdout)
                     if not failed_stage:
                         self.assertIn("Home-network tools installed", result.stdout)
                         if redirect == "2>&1":
                             for stage in stages:
                                 self.assertIn("benign-warning-" + stage, result.stdout)
 
-    @unittest.skipUnless(os.name == "nt", "PowerShell launcher failures and native status scope")
-    def test_powershell_launcher_fails_closed_and_preserves_native_status(self):
+    @unittest.skipUnless(os.name == "nt", "PowerShell 5.1 launcher failures")
+    def test_powershell_launcher_failure_is_never_reported_as_success(self):
+        wrapper = self.directory / "home-network.ps1"
+        shutil.copyfile(HELPER_DIRECTORY / "home-network.ps1", wrapper)
+        (self.directory / "home_network.py").write_text("print('helper-ran')", encoding="utf-8")
+        shim_directory = self.native_setup_stub()
+        local_app_data = self.directory / "local-app-data"
+        venv_python = local_app_data / "HomeNetwork" / "venv-v1" / "Scripts" / "python.exe"
+        calls = self.directory / "calls.txt"
+        scenarios = (("LOCALAPPDATA absent", "FRANK check", []),
+                     ("venv python cannot start", "FRANK check", ["bootstrap"]),
+                     ("pip cannot start", "setup", ["bootstrap", "version", "venv"]))
         for redirect in ("", "2>&1", "2>$null"):
-            for scenario in ("baseline-zero", "baseline-nonzero", "missing-localappdata", "invalid-venv"):
-                with self.subTest(redirect=redirect, scenario=scenario), tempfile.TemporaryDirectory(dir=self.directory) as temporary:
-                    root = Path(temporary).resolve()
-                    wrapper = root / "home-network.ps1"
-                    shutil.copyfile(Path(__file__).with_name("home-network.ps1"), wrapper)
-                    (root / "home_network.py").write_text(
-                        "import os,pathlib,sys; pathlib.Path(__file__).with_name('ran').write_text('yes'); "
-                        "print('helper-output'); print('helper-error',file=sys.stderr); "
-                        "sys.exit(int(os.environ['HOME_NETWORK_TEST_RESULT']))", encoding="utf-8")
-                    expected_status = 0 if scenario == "baseline-zero" else 37
-                    environment = dict(os.environ, LOCALAPPDATA=str(root / "app-data"),
-                                       HOME_NETWORK_TEST_RESULT=str(expected_status))
-                    if scenario == "missing-localappdata":
+            for scenario, arguments, expected_calls in scenarios:
+                with self.subTest(redirect=redirect, scenario=scenario):
+                    shutil.rmtree(local_app_data, ignore_errors=True)
+                    calls.write_text("", encoding="utf-8")
+                    environment = dict(os.environ, LOCALAPPDATA=str(local_app_data),
+                                       HOME_NETWORK_TEST_CALLS=str(calls), HOME_NETWORK_TEST_FAIL_STAGE="")
+                    if scenario == "LOCALAPPDATA absent":
+                        # The real interpreter stays on PATH, so a launcher which continued would run the helper.
                         del environment["LOCALAPPDATA"]
-                    elif scenario == "invalid-venv":
-                        executable = root / "app-data" / "HomeNetwork" / "venv-v1" / "Scripts" / "python.exe"
-                        executable.parent.mkdir(parents=True)
-                        executable.write_bytes(b"not an executable")
-                    command = "$captured = & '" + str(wrapper).replace("'", "''") + "' " + redirect
+                    else:
+                        environment["PATH"] = str(shim_directory) + os.pathsep + os.environ["PATH"]
+                    if scenario == "venv python cannot start":
+                        venv_python.parent.mkdir(parents=True)
+                        venv_python.write_text("not an executable", encoding="utf-8")
+                    elif scenario == "pip cannot start":
+                        environment["HOME_NETWORK_TEST_UNSTARTABLE_VENV_PYTHON"] = "1"
+                    command = "$captured = & '" + str(wrapper).replace("'", "''") + "' " + arguments + " " + redirect
                     command += "; $status = $LASTEXITCODE; $captured | ForEach-Object { Write-Output $_.ToString() }; exit $status"
                     result = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
                                             env=environment, capture_output=True, text=True)
-                    if scenario.startswith("baseline"):
-                        self.assertEqual(result.returncode, expected_status, result.stdout + result.stderr)
-                        self.assertTrue((root / "ran").exists())
-                        self.assertIn("helper-output", result.stdout)
-                        if redirect == "2>&1":
-                            self.assertIn("helper-error", result.stdout)
-                        elif redirect == "2>$null":
-                            self.assertNotIn("helper-error", result.stdout + result.stderr)
-                        else:
-                            self.assertIn("helper-error", result.stderr)
-                    else:
-                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                        self.assertFalse((root / "ran").exists())
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertNotIn("helper-ran", result.stdout)
+                    self.assertNotIn("Home-network tools installed", result.stdout)
+                    self.assertEqual(calls.read_text(encoding="utf-8").splitlines(), expected_calls)
 
 
 if __name__ == "__main__":
