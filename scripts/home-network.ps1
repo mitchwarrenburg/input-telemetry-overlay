@@ -1,9 +1,10 @@
 # PowerShell 5.1+ launcher. All repositories share this user's isolated environment.
-$ErrorActionPreference = 'Stop'
+# Every native stage may write harmless stderr. Check its exit code explicitly.
+$ErrorActionPreference = 'Continue'
 [string[]] $forwarded = @($args)
-$venv = Join-Path $env:LOCALAPPDATA 'HomeNetwork\venv-v1'
-$venvPython = Join-Path $venv 'Scripts\python.exe'
-$helper = Join-Path $PSScriptRoot 'home_network.py'
+$venv = Join-Path $env:LOCALAPPDATA 'HomeNetwork\venv-v1' -ErrorAction Stop
+$venvPython = Join-Path $venv 'Scripts\python.exe' -ErrorAction Stop
+$helper = Join-Path $PSScriptRoot 'home_network.py' -ErrorAction Stop
 $bootstrap = $null
 $bootstrapArgs = @()
 if (Get-Command py -ErrorAction SilentlyContinue) {
@@ -32,19 +33,15 @@ if (Test-Path -LiteralPath $venvPython) {
 }
 # Base64-encoded JSON preserves every argument through PowerShell 5.1's native parser.
 # The native invocation also preserves PowerShell pipelines and an interactive console.
-$json = ConvertTo-Json -InputObject (@($helper) + $forwarded) -Compress
+$json = ConvertTo-Json -InputObject (@($helper) + $forwarded) -Compress -ErrorAction Stop
 $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
 $runner = 'import base64,json,runpy,sys;sys.argv=json.loads(base64.b64decode(sys.argv[1]));runpy.run_path(sys.argv[0],run_name=''__main__'')'
 $previousEncoding = [Console]::OutputEncoding
-$previousErrorActionPreference = $ErrorActionPreference
 try {
-    [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
-    # PS5 wraps redirected native stderr as ErrorRecord; preserve output and native status.
-    $ErrorActionPreference = 'Continue'
+    [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false) -ErrorAction Stop
     & $interpreter -X utf8 -c $runner $encoded
     $result = $LASTEXITCODE
 } finally {
     [Console]::OutputEncoding = $previousEncoding
-    $ErrorActionPreference = $previousErrorActionPreference
 }
 exit $result

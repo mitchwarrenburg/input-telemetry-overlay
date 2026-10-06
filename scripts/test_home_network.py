@@ -18,6 +18,7 @@ spec = importlib.util.spec_from_file_location("home_network", Path(__file__).wit
 network = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(network)
 TEST_HOST_KEY_BITS = 1024
+TEST_SETUP_FAILURE_CODE = 73
 
 
 class FakeSFTP:
@@ -462,6 +463,63 @@ class NetworkTests(unittest.TestCase):
             self.assertIn("remote-output", result.stdout)
             if redirect == "2>&1":
                 self.assertIn("remote-error", result.stdout)
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell 5.1 native setup stages")
+    def test_powershell_setup_preserves_native_stderr_and_stage_failures(self):
+        wrapper = self.directory / "home-network.ps1"
+        shutil.copyfile(Path(__file__).with_name("home-network.ps1"), wrapper)
+        shim_directory = self.directory / "bin"
+        shim_directory.mkdir()
+        shim = shim_directory / "py.exe"
+        source = self.directory / "NativeSetupStub.cs"
+        source.write_text(r'''
+using System;
+using System.IO;
+using System.Reflection;
+class NativeSetupStub {
+    public static int Main(string[] args) {
+        string stage = args[0] == "-3" ? "bootstrap" : args[0] == "-c" ? "version" : args[1];
+        File.AppendAllText(Environment.GetEnvironmentVariable("HOME_NETWORK_TEST_CALLS"), stage + "\n");
+        Console.Error.WriteLine("benign-warning-" + stage);
+        if (Environment.GetEnvironmentVariable("HOME_NETWORK_TEST_FAIL_STAGE") == stage)
+            return Int32.Parse(Environment.GetEnvironmentVariable("HOME_NETWORK_TEST_FAIL_CODE"));
+        string executable = Assembly.GetExecutingAssembly().Location;
+        if (stage == "bootstrap") Console.WriteLine(executable);
+        else if (stage == "venv") {
+            string destination = Path.Combine(args[2], "Scripts");
+            Directory.CreateDirectory(destination);
+            File.Copy(executable, Path.Combine(destination, "python.exe"), true);
+        }
+        return 0;
+    }
+}
+''', encoding="utf-8")
+        compile_script = "Add-Type -Path '" + str(source).replace("'", "''") + "' -OutputAssembly '" + str(shim).replace("'", "''") + "' -OutputType ConsoleApplication"
+        compiled = subprocess.run(["powershell.exe", "-NoProfile", "-Command", compile_script], capture_output=True, text=True)
+        self.assertEqual(compiled.returncode, 0, compiled.stderr)
+        stages = ["bootstrap", "version", "venv", "pip"]
+        for redirect in ("2>&1", "2>$null"):
+            for failed_stage in ("", *stages):
+                with self.subTest(redirect=redirect, failed_stage=failed_stage):
+                    calls = self.directory / "calls.txt"
+                    calls.write_text("", encoding="utf-8")
+                    environment = dict(os.environ, PATH=str(shim_directory) + os.pathsep + os.environ["PATH"],
+                                       LOCALAPPDATA=str(self.directory / "local-app-data"),
+                                       HOME_NETWORK_TEST_CALLS=str(calls), HOME_NETWORK_TEST_FAIL_STAGE=failed_stage,
+                                       HOME_NETWORK_TEST_FAIL_CODE=str(TEST_SETUP_FAILURE_CODE))
+                    command = "$captured = & '" + str(wrapper).replace("'", "''") + "' setup " + redirect
+                    command += "; $status = $LASTEXITCODE; $captured | ForEach-Object { Write-Output $_.ToString() }; exit $status"
+                    result = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+                                            env=environment, capture_output=True, text=True)
+                    expected_code = (1 if failed_stage in ("bootstrap", "version") else TEST_SETUP_FAILURE_CODE) if failed_stage else 0
+                    self.assertEqual(result.returncode, expected_code, result.stdout + result.stderr)
+                    expected_stages = stages[:stages.index(failed_stage) + 1] if failed_stage else stages
+                    self.assertEqual(calls.read_text(encoding="utf-8").splitlines(), expected_stages)
+                    if not failed_stage:
+                        self.assertIn("Home-network tools installed", result.stdout)
+                        if redirect == "2>&1":
+                            for stage in stages:
+                                self.assertIn("benign-warning-" + stage, result.stdout)
 
 
 if __name__ == "__main__":

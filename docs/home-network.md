@@ -98,6 +98,9 @@ PowerShell on FRANK and MACINDOZE, the account's configured shell on the MacBook
 Quote for the local shell first; single quotes preserve a remote PowerShell `$`
 expression in both PowerShell and Bash. `check` verifies authentication and a
 remote command. Use `ls` to choose an actual source path before transferring it.
+For Unicode output from a Windows `exec` command, start the remote command with
+`[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false);` so PowerShell
+emits UTF-8 over SSH.
 
 File transfer forms, with placeholder paths to replace after discovery:
 
@@ -115,9 +118,11 @@ bash scripts/home-network.sh macbook put './result.json' '/Users/mitchwarrenburg
 Transfers take exact destination paths and refuse to overwrite existing files.
 Choose a new destination when collecting another snapshot. Directory transfers
 require `--recursive`. Explicit source and destination roots resolve existing
-links once, so macOS `/tmp`, `/var` and Windows junction roots work. Recursive
-transfers refuse symlinks or reparse points encountered below those roots. Use
-forward slashes for remote Windows paths (`C:/...` or `/C:/...`) and absolute
+links once, so macOS `/tmp`, `/var` and Windows junction roots work. Below those
+roots, recursive transfers refuse local links and reparse points, and remote
+entries the SFTP server reports as symlinks. Windows SFTP may report junctions as
+ordinary directories and traverse them. Use forward slashes for remote Windows
+paths (`C:/...` or `/C:/...`) and absolute
 paths for the MacBook. At the interactive SFTP prompt, use forward slashes for
 local paths too; backslashes are rejected before a command runs.
 Directory transfers can leave completed files behind if interrupted; inspect the

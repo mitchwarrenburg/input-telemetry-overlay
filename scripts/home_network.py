@@ -549,7 +549,8 @@ def list_files(sftp, path):
 def sftp_prompt(sftp, windows_destination=False):
     login_home = sftp.normalize(".")
     print("SFTP: pwd, cd PATH, ls [PATH], get SOURCE DEST [-r], put SOURCE DEST [-r], exit")
-    print("Quote paths with spaces; use forward slashes. Existing files and links below transfer roots are refused.")
+    print("Quote paths with spaces; use forward slashes. Existing files are refused.")
+    print("Below transfer roots, local links and server-reported symlinks are refused.")
     while True:
         try:
             line = input("sftp> ")
