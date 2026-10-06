@@ -489,7 +489,9 @@ class NativeSetupStub {
         else if (stage == "venv") {
             string destination = Path.Combine(args[2], "Scripts");
             Directory.CreateDirectory(destination);
-            File.Copy(executable, Path.Combine(destination, "python.exe"), true);
+            if (Environment.GetEnvironmentVariable("HOME_NETWORK_TEST_INVALID_VENV") == "1")
+                File.WriteAllText(Path.Combine(destination, "python.exe"), "not an executable");
+            else File.Copy(executable, Path.Combine(destination, "python.exe"), true);
         }
         return 0;
     }
@@ -499,23 +501,26 @@ class NativeSetupStub {
         compiled = subprocess.run(["powershell.exe", "-NoProfile", "-Command", compile_script], capture_output=True, text=True)
         self.assertEqual(compiled.returncode, 0, compiled.stderr)
         stages = ["bootstrap", "version", "venv", "pip"]
-        for redirect in ("2>&1", "2>$null"):
-            for failed_stage in ("", *stages):
+        for redirect in ("", "2>&1", "2>$null"):
+            for failed_stage in ("", *stages, "pip-not-started"):
                 with self.subTest(redirect=redirect, failed_stage=failed_stage):
                     calls = self.directory / "calls.txt"
                     calls.write_text("", encoding="utf-8")
                     environment = dict(os.environ, PATH=str(shim_directory) + os.pathsep + os.environ["PATH"],
                                        LOCALAPPDATA=str(self.directory / "local-app-data"),
                                        HOME_NETWORK_TEST_CALLS=str(calls), HOME_NETWORK_TEST_FAIL_STAGE=failed_stage,
+                                       HOME_NETWORK_TEST_INVALID_VENV="1" if failed_stage == "pip-not-started" else "0",
                                        HOME_NETWORK_TEST_FAIL_CODE=str(TEST_SETUP_FAILURE_CODE))
                     command = "$captured = & '" + str(wrapper).replace("'", "''") + "' setup " + redirect
                     command += "; $status = $LASTEXITCODE; $captured | ForEach-Object { Write-Output $_.ToString() }; exit $status"
                     result = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
                                             env=environment, capture_output=True, text=True)
-                    expected_code = (1 if failed_stage in ("bootstrap", "version") else TEST_SETUP_FAILURE_CODE) if failed_stage else 0
+                    expected_code = (1 if failed_stage in ("bootstrap", "version", "pip-not-started") else TEST_SETUP_FAILURE_CODE) if failed_stage else 0
                     self.assertEqual(result.returncode, expected_code, result.stdout + result.stderr)
-                    expected_stages = stages[:stages.index(failed_stage) + 1] if failed_stage else stages
+                    expected_stages = stages[:stages.index(failed_stage) + 1] if failed_stage in stages else stages[:3] if failed_stage else stages
                     self.assertEqual(calls.read_text(encoding="utf-8").splitlines(), expected_stages)
+                    if failed_stage == "pip-not-started":
+                        self.assertNotIn("Home-network tools installed", result.stdout)
                     if not failed_stage:
                         self.assertIn("Home-network tools installed", result.stdout)
                         if redirect == "2>&1":
