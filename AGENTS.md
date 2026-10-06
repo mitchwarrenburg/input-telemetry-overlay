@@ -8,4 +8,4 @@ Treat graph results as structural evidence; inspect unindexed or stale files dir
 
 ## Home network
 
-Home network: Before connecting to another machine, transferring files, or collecting iRacing data, read [home network access](docs/home-network.md).
+Home network: For remote debugging, file searches, command execution, transfers or iRacing data collection, use the [home-network skill](.agents/skills/home-network/SKILL.md) and [access guide](docs/home-network.md).

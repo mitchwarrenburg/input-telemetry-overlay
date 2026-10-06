@@ -270,14 +270,15 @@ def local_path(value):
     return path
 
 
-def remote_path(sftp, value):
+def remote_path(sftp, value, login_home=None):
     value = value.replace("\\", "/")
     if ".." in value.split("/") or "\0" in value:
         raise ValueError("Use a remote path without '..' or NUL.")
     if re.match(r"^[A-Za-z]:/", value):
         value = "/" + value
     if value == "~" or value.startswith("~/"):
-        value = posixpath.join(sftp.normalize("."), value[2:] if value != "~" else "")
+        home = login_home if login_home is not None else sftp.normalize(".")
+        value = posixpath.join(home, value[2:] if value != "~" else "")
     if not value.startswith("/"):
         value = posixpath.join(sftp.normalize("."), value)
     if re.match(r"^[A-Za-z]:/", value):
@@ -452,6 +453,7 @@ def list_files(sftp, path):
 
 
 def sftp_prompt(sftp):
+    login_home = sftp.normalize(".")
     print("SFTP: pwd, cd PATH, ls [PATH], get SOURCE DEST [-r], put SOURCE DEST [-r], exit")
     print("Quote paths with spaces; use forward slashes. Existing files and symlinks are refused.")
     while True:
@@ -469,18 +471,21 @@ def sftp_prompt(sftp):
             if action == "pwd" and not values:
                 print(sftp.normalize("."))
             elif action == "cd" and len(values) == 1:
-                target = remote_path(sftp, values[0])
+                target = remote_path(sftp, values[0], login_home)
                 info = remote_stat(sftp, target)
                 if info is None or not stat.S_ISDIR(info.st_mode):
                     raise ValueError("Remote path is not a directory.")
                 sftp.chdir(target)
             elif action == "ls" and len(values) <= 1:
-                list_files(sftp, values[0] if values else ".")
+                target = remote_path(sftp, values[0] if values else ".", login_home)
+                list_files(sftp, target)
             elif action in ("get", "put"):
                 recursive = "-r" in values or "--recursive" in values
                 paths = [arg for arg in values if arg not in ("-r", "--recursive")]
                 if len(paths) != 2:
                     raise ValueError("Use %s SOURCE DESTINATION [-r]." % action)
+                remote_index = 0 if action == "get" else 1
+                paths[remote_index] = remote_path(sftp, paths[remote_index], login_home)
                 (get_files if action == "get" else put_files)(sftp, *paths, recursive=recursive)
             elif action == "help":
                 print("pwd | cd PATH | ls [PATH] | get REMOTE LOCAL [-r] | put LOCAL REMOTE [-r] | exit")

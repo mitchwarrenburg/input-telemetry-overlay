@@ -5,6 +5,20 @@ Use this repository's `scripts/home-network.ps1` on Windows or
 or SFTP. Run the examples from the repository root. The same commands and aliases
 work in every participating repository.
 
+## Ask an agent
+
+The repo-local [home-network skill](../.agents/skills/home-network/SKILL.md) is
+available to Codex as `$home-network` and Claude Code as `/home-network`. It also
+applies automatically to matching remote-work requests. For example:
+
+- "Use home-network to debug the capture collector on FRANK."
+- "Search macbook's project directory for the latest error log."
+- "Retrieve the required iRacing session files from FRANK and analyze them here."
+
+Codex reads the canonical skill under `.agents/skills/home-network`; Claude's
+`.claude/skills/home-network` entry points to the same instructions. Start a new
+agent session after pulling these files if the skill is absent from its catalog.
+
 ## Choose the source
 
 | Machine | Aliases | SSH account and address |

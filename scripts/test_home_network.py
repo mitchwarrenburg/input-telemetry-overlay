@@ -24,9 +24,13 @@ class FakeSFTP:
         self.files = {"/": None, "/home": None, "/home/user": None}
         self.extra_entries = []
         self.fail_download = False
+        self.cwd = "/home/user"
 
     def normalize(self, path):
-        return "/home/user" if path == "." else path
+        return self.cwd if path == "." else path
+
+    def chdir(self, path):
+        self.cwd = path
 
     def lstat(self, path):
         if path not in self.files:
@@ -102,6 +106,20 @@ class NetworkTests(unittest.TestCase):
         self.assertEqual(network.remote_path(self.sftp, "~/data file"), "/home/user/data file")
         with self.assertRaises(ValueError):
             network.remote_path(self.sftp, "../outside")
+
+    def test_sftp_prompt_tilde_uses_login_home_after_cd_for_all_commands(self):
+        self.sftp.files["/elsewhere"] = None
+        commands = ["cd /elsewhere", "ls ~", "get ~/remote 'local copy'",
+                    "put 'local source' ~/uploaded", "cd ~", "pwd", "exit"]
+        with patch("builtins.input", side_effect=commands), \
+                patch.object(network, "list_files") as listing, \
+                patch.object(network, "get_files") as download, \
+                patch.object(network, "put_files") as upload:
+            self.assertEqual(network.sftp_prompt(self.sftp), 0)
+        listing.assert_called_once_with(self.sftp, "/home/user")
+        download.assert_called_once_with(self.sftp, "/home/user/remote", "local copy", recursive=False)
+        upload.assert_called_once_with(self.sftp, "local source", "/home/user/uploaded", recursive=False)
+        self.assertEqual(self.sftp.cwd, "/home/user")
 
     def test_download_and_upload_tree_with_unicode(self):
         self.sftp.files.update({"/source": None, "/source/sub dir": None, "/source/sub dir/café.txt": b"\x00hello\xff"})
