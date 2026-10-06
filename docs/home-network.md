@@ -25,7 +25,7 @@ agent session after pulling these files if the skill is absent from its catalog.
 | --- | --- | --- |
 | FRANK — primary machine | `win` | `mitch@192.168.1.247` |
 | MACINDOZE | `imac` | `mitch@192.168.1.243` |
-| Mitch's MacBook Pro | `macbook`, `mitch-mac`, `mitch-mac.local` | `mitchwarrenburg@mitch-mac.local` |
+| Mitch's MacBook Pro | `macbook`, `mitch-mac`, `mitch-mac.local`, `Mac.attlocal.net` | `mitchwarrenburg@mitch-mac.local` |
 
 Machine names and aliases are case-insensitive. Quote names containing spaces;
 the MacBook name accepts either a straight or curly apostrophe.
@@ -114,8 +114,15 @@ bash scripts/home-network.sh macbook put './result.json' '/Users/mitchwarrenburg
 
 Transfers take exact destination paths and refuse to overwrite existing files.
 Choose a new destination when collecting another snapshot. Directory transfers
-require `--recursive` and reject symlinks. Use forward slashes for remote Windows
-paths (`C:/...` or `/C:/...`) and absolute paths for the MacBook.
+require `--recursive`. Explicit source and destination roots resolve existing
+links once, so macOS `/tmp`, `/var` and Windows junction roots work. Recursive
+transfers refuse symlinks or reparse points encountered below those roots. Use
+forward slashes for remote Windows paths (`C:/...` or `/C:/...`) and absolute
+paths for the MacBook. At the interactive SFTP prompt, use forward slashes for
+local paths too; backslashes are rejected before a command runs.
+Directory transfers can leave completed files behind if interrupted; inspect the
+destination before retrying with a new path. Downloads on macOS start with private
+user permissions; transfers do not copy the source file's permissions.
 
 Agents should use `check`, `ls`, `exec` and `get` for bounded tasks, then verify
 the retrieved files have the expected contents and provenance. For an interactive

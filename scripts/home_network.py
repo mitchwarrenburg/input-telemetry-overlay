@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import codecs
 import contextlib
 import errno
 import hashlib
@@ -38,6 +39,21 @@ DEFAULT_TERMINAL_SIZE = (100, 30)
 WINDOWS_VT_INPUT = 0x0200
 WINDOWS_VT_OUTPUT = 0x0004
 WINDOWS_INPUT_LINE_ECHO_SIGNALS = 0x0007
+WINDOWS_STDIN_HANDLE = -10
+WINDOWS_STDOUT_HANDLE = -11
+WINDOWS_REPARSE_POINT_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+WINDOWS_DOS_PORT_NUMBERS = range(1, 10)
+MISSING_EXIT_STATUS_CODE = 255
+INTERRUPTED_EXIT_CODE = 130
+WINDOWS_KEY_EVENT = 0x0001
+WINDOWS_VK_MENU = 0x12
+WINDOWS_INPUT_BATCH_SIZE = 64
+WINDOWS_EVENT_UNION_BYTES = 16
+WINDOWS_KEY_SEQUENCES = {
+    0x21: "\x1b[5~", 0x22: "\x1b[6~", 0x23: "\x1b[F", 0x24: "\x1b[H",
+    0x25: "\x1b[D", 0x26: "\x1b[A", 0x27: "\x1b[C", 0x28: "\x1b[B",
+    0x2D: "\x1b[2~", 0x2E: "\x1b[3~",
+}
 
 
 def resolve_host(name):
@@ -161,9 +177,9 @@ def drain(channel):
             output(channel.recv(IO_CHUNK_SIZE), sys.stdout)
         if channel.recv_stderr_ready():
             output(channel.recv_stderr(IO_CHUNK_SIZE), sys.stderr)
-        if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+        if channel.closed and not channel.recv_ready() and not channel.recv_stderr_ready():
             status = channel.recv_exit_status()
-            return status if status >= 0 else 255
+            return status if status >= 0 else MISSING_EXIT_STATUS_CODE
         time.sleep(CHANNEL_POLL_SECONDS)
 
 
@@ -184,12 +200,15 @@ def raw_terminal():
         kernel.SetConsoleMode.argtypes = [ctypes.c_void_p, ctypes.c_ulong]
         saved = []
         try:
-            for handle_id, mask, clear in ((-10, WINDOWS_VT_INPUT, WINDOWS_INPUT_LINE_ECHO_SIGNALS), (-11, WINDOWS_VT_OUTPUT, 0)):
+            for handle_id, mask, clear in ((WINDOWS_STDIN_HANDLE, WINDOWS_VT_INPUT, WINDOWS_INPUT_LINE_ECHO_SIGNALS),
+                                           (WINDOWS_STDOUT_HANDLE, WINDOWS_VT_OUTPUT, 0)):
                 handle = kernel.GetStdHandle(handle_id)
                 mode = ctypes.c_ulong()
-                if kernel.GetConsoleMode(handle, ctypes.byref(mode)):
-                    saved.append((handle, mode.value))
-                    kernel.SetConsoleMode(handle, (mode.value & ~clear) | mask)
+                if not kernel.GetConsoleMode(handle, ctypes.byref(mode)):
+                    raise ctypes.WinError()
+                saved.append((handle, mode.value))
+                if not kernel.SetConsoleMode(handle, (mode.value & ~clear) | mask):
+                    raise ctypes.WinError()
             yield
         finally:
             for handle, mode in saved:
@@ -206,66 +225,117 @@ def raw_terminal():
             termios.tcsetattr(descriptor, termios.TCSADRAIN, original)
 
 
+def windows_key_text(char, virtual_key, repeat, down=True):
+    # UnicodeChar distinguishes real U+00E0 from keys which CRT encodes with an 0xE0 prefix.
+    # Alt composition (including ConPTY surrogate pairs) delivers text on Alt key release.
+    if not down and not (virtual_key == WINDOWS_VK_MENU and char != "\0"):
+        return ""
+    return (char if char != "\0" else WINDOWS_KEY_SEQUENCES.get(virtual_key, "")) * repeat
+
+
+def windows_input_reader():
+    """Read Unicode console events without blocking on mouse/resize/key-release events."""
+    import ctypes
+    from ctypes import wintypes
+
+    class KeyEvent(ctypes.Structure):
+        _fields_ = [("down", wintypes.BOOL), ("repeat", wintypes.WORD),
+                    ("virtual_key", wintypes.WORD), ("scan", wintypes.WORD),
+                    ("char", wintypes.WCHAR), ("control", wintypes.DWORD)]
+
+    class EventData(ctypes.Union):
+        _fields_ = [("key", KeyEvent), ("padding", ctypes.c_byte * WINDOWS_EVENT_UNION_BYTES)]
+
+    class InputRecord(ctypes.Structure):
+        _fields_ = [("kind", wintypes.WORD), ("event", EventData)]
+
+    kernel = ctypes.windll.kernel32
+    kernel.GetStdHandle.restype = wintypes.HANDLE
+    kernel.GetNumberOfConsoleInputEvents.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.ReadConsoleInputW.argtypes = [wintypes.HANDLE, ctypes.POINTER(InputRecord), wintypes.DWORD,
+                                      ctypes.POINTER(wintypes.DWORD)]
+    handle = kernel.GetStdHandle(WINDOWS_STDIN_HANDLE)
+    decoder = codecs.getincrementaldecoder("utf-16-le")("replace")
+
+    def read():
+        count = wintypes.DWORD()
+        if not kernel.GetNumberOfConsoleInputEvents(handle, ctypes.byref(count)):
+            raise ctypes.WinError()
+        if not count.value:
+            return b""
+        records = (InputRecord * min(count.value, WINDOWS_INPUT_BATCH_SIZE))()
+        if not kernel.ReadConsoleInputW(handle, records, len(records), ctypes.byref(count)):
+            raise ctypes.WinError()
+        text = "".join(windows_key_text(record.event.key.char, record.event.key.virtual_key,
+                                       record.event.key.repeat, record.event.key.down)
+                       for record in records[:count.value]
+                       if record.kind == WINDOWS_KEY_EVENT)
+        return decoder.decode(text.encode("utf-16-le", "surrogatepass")).encode("utf-8")
+    return read
+
+
 def shell(client):
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         raise ValueError("shell requires an interactive terminal. Agents should use exec with one quoted command.")
     size = shutil.get_terminal_size(DEFAULT_TERMINAL_SIZE)
+    input_open = True
     with client.invoke_shell(term="xterm-256color", width=size.columns, height=size.lines) as channel:
         with raw_terminal():
+            read_windows = windows_input_reader() if os.name == "nt" else None
             while True:
                 if channel.recv_ready():
                     output(channel.recv(IO_CHUNK_SIZE), sys.stdout)
-                if channel.exit_status_ready() and not channel.recv_ready():
+                if channel.closed and not channel.recv_ready():
                     status = channel.recv_exit_status()
-                    return status if status >= 0 else 255
+                    return status if status >= 0 else MISSING_EXIT_STATUS_CODE
                 resized = shutil.get_terminal_size(DEFAULT_TERMINAL_SIZE)
                 if resized != size:
                     channel.resize_pty(width=resized.columns, height=resized.lines)
                     size = resized
                 if os.name == "nt":
-                    import msvcrt
-                    if msvcrt.kbhit():
-                        char = msvcrt.getwch()
-                        if char in ("\x00", "\xe0"):
-                            char = {"H": "\x1b[A", "P": "\x1b[B", "M": "\x1b[C", "K": "\x1b[D",
-                                    "G": "\x1b[H", "O": "\x1b[F", "S": "\x1b[3~"}.get(msvcrt.getwch(), "")
-                        if char:
-                            if len(char) == 1 and 0xD800 <= ord(char) <= 0xDBFF:
-                                char = (char + msvcrt.getwch()).encode("utf-16-le", "surrogatepass").decode("utf-16-le")
-                            channel.sendall(char.encode("utf-8"))
+                    data = read_windows()
+                    if data:
+                        channel.sendall(data)
                     else:
                         time.sleep(CHANNEL_POLL_SECONDS)
                 else:
                     import select
+                    if not input_open:
+                        time.sleep(CHANNEL_POLL_SECONDS)
+                        continue
                     if select.select([sys.stdin], [], [], INPUT_POLL_SECONDS)[0]:
                         data = os.read(sys.stdin.fileno(), IO_CHUNK_SIZE)
                         if not data:
                             channel.shutdown_write()
+                            input_open = False
                         else:
                             channel.sendall(data)
 
 
-def safe_name(name):
+def safe_name(name, windows=None):
     if (not name or name in (".", "..") or any(char in name for char in "/\\:\0")
             or any(ord(char) < 32 for char in name)):
         raise ValueError("Unsafe transfer entry: %r" % name)
-    if os.name == "nt" and (name[-1:] in (".", " ") or any(char in name for char in '<>"|?*')
-                            or name.split(".")[0].upper() in {"CON", "PRN", "AUX", "NUL", *["COM%d" % x for x in range(1, 10)], *["LPT%d" % x for x in range(1, 10)]}):
+    windows = os.name == "nt" if windows is None else windows
+    if windows and (name[-1:] in (".", " ") or any(char in name for char in '<>"|?*')
+                            or name.split(".")[0].upper() in {"CON", "PRN", "AUX", "NUL", *["COM%d" % x for x in WINDOWS_DOS_PORT_NUMBERS], *["LPT%d" % x for x in WINDOWS_DOS_PORT_NUMBERS]}):
         raise ValueError("Unsupported Windows filename: %r" % name)
     return name
 
 
-def local_path(value):
+def local_path(value, resolve_root=False):
     path = Path(value).expanduser()
     if ".." in path.parts:
         raise ValueError("Use a local path without '..': %s" % value)
     path = Path(os.path.abspath(path))
+    if resolve_root:
+        path = Path(os.path.realpath(path))
     for part in reversed((path, *path.parents)):
         try:
             info = part.lstat()
         except FileNotFoundError:
             continue
-        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & WINDOWS_REPARSE_POINT_ATTRIBUTE:
             raise ValueError("Local symlink or reparse point refused: %s" % part)
     return path
 
@@ -303,6 +373,21 @@ def remote_stat(sftp, path):
         if stat.S_ISLNK(result.st_mode):
             raise ValueError("Remote symlink refused: %s" % current)
     return result if result is not None else sftp.lstat(path)
+
+
+def remote_root(sftp, value):
+    """Resolve an explicit user root once, including existing ancestors of new destinations."""
+    path = remote_path(sftp, value)
+    missing = []
+    while True:
+        try:
+            canonical = remote_path(sftp, sftp.normalize(path))
+            return posixpath.join(canonical, *reversed(missing)) if missing else canonical
+        except OSError as error:
+            if error.errno != errno.ENOENT or posixpath.dirname(path) == path:
+                raise
+            missing.append(posixpath.basename(path))
+            path = posixpath.dirname(path)
 
 
 def require_type(info, path):
@@ -354,7 +439,7 @@ def publish_local(staged, target):
     try:
         os.link(staged, target)
     except OSError as error:
-        if error.errno not in (errno.EXDEV, errno.EPERM, errno.EOPNOTSUPP):
+        if error.errno not in (errno.EXDEV, errno.EPERM, errno.EOPNOTSUPP, errno.ENOTSUP):
             raise
         # Filesystems without hard links retain no-overwrite safety via exclusive creation.
         handle = target.open("xb")
@@ -367,8 +452,8 @@ def publish_local(staged, target):
 
 
 def get_files(sftp, source, destination, recursive=False):
-    source = remote_path(sftp, source)
-    destination = local_path(destination)
+    source = remote_root(sftp, source)
+    destination = local_path(destination, resolve_root=True)
     source_info = remote_stat(sftp, source)
     require_type(source_info, source)
     if stat.S_ISDIR(source_info.st_mode) and not recursive:
@@ -410,9 +495,16 @@ def remote_mkdirs(sftp, path):
     sftp.mkdir(path)
 
 
-def put_files(sftp, source, destination, recursive=False):
-    source = local_path(source)
-    destination = remote_path(sftp, destination)
+def validate_remote_destination(path, windows):
+    for index, component in enumerate(path.strip("/").split("/")):
+        if component and not (index == 0 and re.fullmatch(r"[A-Za-z]:", component)):
+            safe_name(component, windows=windows)
+
+
+def put_files(sftp, source, destination, recursive=False, windows_destination=False):
+    source = local_path(source, resolve_root=True)
+    validate_remote_destination(remote_path(sftp, destination), windows_destination)
+    destination = remote_root(sftp, destination)
     source_info = source.lstat()
     require_type(source_info, source)
     if stat.S_ISDIR(source_info.st_mode) and not recursive:
@@ -420,6 +512,8 @@ def put_files(sftp, source, destination, recursive=False):
     plan = list(local_tree(source))
     for relative, directory in plan:
         target = posixpath.join(destination, relative) if relative else destination
+        # Validate the full target for its destination platform, including the explicit root.
+        validate_remote_destination(target, windows_destination)
         check_destination(remote_stat(sftp, target), directory, target)
     for relative, directory in plan:
         target = posixpath.join(destination, relative) if relative else destination
@@ -441,7 +535,7 @@ def put_files(sftp, source, destination, recursive=False):
 
 
 def list_files(sftp, path):
-    path = remote_path(sftp, path)
+    path = remote_root(sftp, path)
     info = remote_stat(sftp, path)
     require_type(info, path)
     if not stat.S_ISDIR(info.st_mode):
@@ -452,16 +546,18 @@ def list_files(sftp, path):
         print("%12d  %s%s" % (item.st_size, item.filename, suffix))
 
 
-def sftp_prompt(sftp):
+def sftp_prompt(sftp, windows_destination=False):
     login_home = sftp.normalize(".")
     print("SFTP: pwd, cd PATH, ls [PATH], get SOURCE DEST [-r], put SOURCE DEST [-r], exit")
-    print("Quote paths with spaces; use forward slashes. Existing files and symlinks are refused.")
+    print("Quote paths with spaces; use forward slashes. Existing files and links below transfer roots are refused.")
     while True:
         try:
             line = input("sftp> ")
         except EOFError:
             return 0
         try:
+            if "\\" in line:
+                raise ValueError("Use forward slashes in SFTP paths; backslashes are not accepted.")
             args = shlex.split(line)
             if not args:
                 continue
@@ -471,7 +567,7 @@ def sftp_prompt(sftp):
             if action == "pwd" and not values:
                 print(sftp.normalize("."))
             elif action == "cd" and len(values) == 1:
-                target = remote_path(sftp, values[0], login_home)
+                target = remote_root(sftp, remote_path(sftp, values[0], login_home))
                 info = remote_stat(sftp, target)
                 if info is None or not stat.S_ISDIR(info.st_mode):
                     raise ValueError("Remote path is not a directory.")
@@ -486,7 +582,10 @@ def sftp_prompt(sftp):
                     raise ValueError("Use %s SOURCE DESTINATION [-r]." % action)
                 remote_index = 0 if action == "get" else 1
                 paths[remote_index] = remote_path(sftp, paths[remote_index], login_home)
-                (get_files if action == "get" else put_files)(sftp, *paths, recursive=recursive)
+                if action == "get":
+                    get_files(sftp, *paths, recursive=recursive)
+                else:
+                    put_files(sftp, *paths, recursive=recursive, windows_destination=windows_destination)
             elif action == "help":
                 print("pwd | cd PATH | ls [PATH] | get REMOTE LOCAL [-r] | put LOCAL REMOTE [-r] | exit")
             else:
@@ -530,13 +629,13 @@ def main(argv=None):
                 if args.action == "check":
                     print("SSH and SFTP OK; remote home: %s" % sftp.normalize("."))
                 elif args.action == "sftp":
-                    return sftp_prompt(sftp)
+                    return sftp_prompt(sftp, windows_destination=host["os"] == "windows")
                 elif args.action == "ls":
                     list_files(sftp, args.path)
                 elif args.action == "get":
                     get_files(sftp, args.source, args.destination, args.recursive)
                 elif args.action == "put":
-                    put_files(sftp, args.source, args.destination, args.recursive)
+                    put_files(sftp, args.source, args.destination, args.recursive, windows_destination=host["os"] == "windows")
         return 0
     except (OSError, ValueError, RuntimeError) as error:
         print("Error: %s" % error, file=sys.stderr)
@@ -551,4 +650,4 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except KeyboardInterrupt:
-        sys.exit(130)
+        sys.exit(INTERRUPTED_EXIT_CODE)

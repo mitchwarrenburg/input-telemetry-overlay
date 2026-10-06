@@ -17,6 +17,7 @@ from unittest.mock import Mock, patch
 spec = importlib.util.spec_from_file_location("home_network", Path(__file__).with_name("home_network.py"))
 network = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(network)
+TEST_HOST_KEY_BITS = 1024
 
 
 class FakeSFTP:
@@ -81,7 +82,7 @@ class NetworkTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.directory = Path(self.temporary.name)
+        self.directory = Path(self.temporary.name).resolve()
         self.sftp = FakeSFTP()
         self.stdout = patch("sys.stdout", new_callable=io.StringIO)
         self.stdout.start()
@@ -118,7 +119,93 @@ class NetworkTests(unittest.TestCase):
             self.assertEqual(network.sftp_prompt(self.sftp), 0)
         listing.assert_called_once_with(self.sftp, "/home/user")
         download.assert_called_once_with(self.sftp, "/home/user/remote", "local copy", recursive=False)
-        upload.assert_called_once_with(self.sftp, "local source", "/home/user/uploaded", recursive=False)
+        upload.assert_called_once_with(self.sftp, "local source", "/home/user/uploaded", recursive=False, windows_destination=False)
+
+    def test_prompt_rejects_backslashes_before_parsing_or_transfer(self):
+        commands = [r"get remote.ibt D:\captures\file.ibt", "exit"]
+        with patch("builtins.input", side_effect=commands), patch.object(network, "get_files") as download, \
+                patch("sys.stderr", new_callable=io.StringIO) as errors:
+            self.assertEqual(network.sftp_prompt(self.sftp), 0)
+        download.assert_not_called()
+        self.assertIn("forward slashes", errors.getvalue())
+
+    def test_explicit_remote_link_root_resolves_but_nested_links_are_refused(self):
+        self.sftp.files.update({"/private": None, "/private/tmp": None, "/private/tmp/file": b"ok"})
+        normalize = self.sftp.normalize
+        with patch.object(self.sftp, "normalize", side_effect=lambda path: "/private/tmp" if path == "/tmp" else normalize(path)):
+            network.get_files(self.sftp, "/tmp", str(self.directory / "download"), recursive=True)
+        self.assertEqual((self.directory / "download" / "file").read_bytes(), b"ok")
+        self.sftp.files["/private/tmp/link"] = "LINK"
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            network.get_files(self.sftp, "/private/tmp", str(self.directory / "refused"), recursive=True)
+        self.assertFalse((self.directory / "refused").exists())
+
+    def test_explicit_local_link_root_resolves_but_nested_links_are_refused(self):
+        source = self.directory / "source"
+        source.mkdir()
+        (source / "file").write_bytes(b"ok")
+        root_link = self.directory / "root-link"
+        try:
+            root_link.symlink_to(source, target_is_directory=True)
+        except OSError as error:
+            self.skipTest("Creating a local symlink requires platform permission: %s" % error)
+        network.put_files(self.sftp, str(root_link), "/uploaded", recursive=True)
+        self.assertEqual(self.sftp.files["/uploaded/file"], b"ok")
+        self.sftp.files["/remote-file"] = b"download"
+        network.get_files(self.sftp, "/remote-file", str(root_link / "download"))
+        self.assertEqual((source / "download").read_bytes(), b"download")
+        (source / "nested-link").symlink_to(source / "file")
+        with self.assertRaisesRegex(ValueError, "symlink|reparse"):
+            network.put_files(self.sftp, str(source), "/refused", recursive=True)
+        self.assertNotIn("/refused", self.sftp.files)
+
+    def test_remote_new_destination_resolves_existing_parent_once(self):
+        calls = []
+        def normalize(path):
+            calls.append(path)
+            if path != "/tmp":
+                raise FileNotFoundError(errno.ENOENT, "missing")
+            return "/private/tmp"
+        with patch.object(self.sftp, "normalize", side_effect=normalize):
+            self.assertEqual(network.remote_root(self.sftp, "/tmp/new/file"), "/private/tmp/new/file")
+        self.assertEqual(calls, ["/tmp/new/file", "/tmp/new", "/tmp"])
+
+    def test_windows_destination_rejects_reserved_roots_and_children_on_any_source_os(self):
+        source = self.directory / "source"
+        source.mkdir()
+        for target in ("/C:/captures/CON.txt", "/C:/captures/trailing."):
+            with self.assertRaisesRegex(ValueError, "Windows filename"):
+                network.put_files(self.sftp, str(source), target, True, windows_destination=True)
+        with patch.object(network, "local_tree", return_value=iter([("", True), ("CON", False)])), \
+                self.assertRaisesRegex(ValueError, "Windows filename"):
+            network.put_files(self.sftp, str(source), "/C:/captures/tree", True, windows_destination=True)
+        self.assertNotIn("/C:/captures/tree", self.sftp.files)
+        self.assertEqual(network.safe_name("CON", windows=False), "CON")
+
+    def test_posix_publication_falls_back_for_distinct_enotsup_without_overwrite(self):
+        source = self.directory / "staged"
+        target = self.directory / "target"
+        source.write_bytes(b"new")
+        with patch.object(network.os, "name", "posix"), patch.object(network.errno, "ENOTSUP", 45), \
+                patch.object(network.os, "link", side_effect=OSError(45, "Darwin ENOTSUP")):
+            network.publish_local(source, target)
+            self.assertEqual(target.read_bytes(), b"new")
+            with self.assertRaises(FileExistsError):
+                network.publish_local(source, target)
+        self.assertEqual(target.read_bytes(), b"new")
+
+    def test_windows_key_records_preserve_a_grave_and_virtual_arrows(self):
+        self.assertEqual(network.windows_key_text("à", 0, 1) + network.windows_key_text("H", 0, 1), "àH")
+        self.assertEqual(network.windows_key_text("\0", 0x26, 1), "\x1b[A")
+        self.assertEqual(network.windows_key_text("\0", 0x25, 2), "\x1b[D\x1b[D")
+        self.assertEqual(network.windows_key_text("\0", 0, 1), "")
+        self.assertEqual(network.windows_key_text("H", 0, 1, down=False), "")
+        decoder = network.codecs.getincrementaldecoder("utf-16-le")("replace")
+        parts = []
+        for surrogate in ("\ud83d", "\ude00"):
+            text = network.windows_key_text(surrogate, network.WINDOWS_VK_MENU, 1, down=False)
+            parts.append(decoder.decode(text.encode("utf-16-le", "surrogatepass")))
+        self.assertEqual("".join(parts), "😀")
         self.assertEqual(self.sftp.cwd, "/home/user")
 
     def test_download_and_upload_tree_with_unicode(self):
@@ -175,7 +262,7 @@ class NetworkTests(unittest.TestCase):
 
         def attributes(path):
             if path == parent:
-                return SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x400)
+                return SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=network.WINDOWS_REPARSE_POINT_ATTRIBUTE)
             return original(path)
         with patch.object(Path, "lstat", attributes), self.assertRaisesRegex(ValueError, "reparse"):
             network.local_path(parent / "outside")
@@ -197,6 +284,7 @@ class NetworkTests(unittest.TestCase):
 
     def test_drain_handles_both_streams_before_nonzero_exit(self):
         channel = Mock()
+        channel.closed = True
         stdout = [b"stdout-a", b"stdout-b"]
         stderr = [b"stderr-a", b"stderr-b"]
         channel.recv_ready.side_effect = lambda: bool(stdout)
@@ -215,11 +303,88 @@ class NetworkTests(unittest.TestCase):
 
     def test_missing_remote_exit_status_is_failure(self):
         channel = Mock()
+        channel.closed = True
         channel.recv_ready.return_value = False
         channel.recv_stderr_ready.return_value = False
         channel.exit_status_ready.return_value = True
         channel.recv_exit_status.return_value = -1
-        self.assertEqual(network.drain(channel), 255)
+        self.assertEqual(network.drain(channel), network.MISSING_EXIT_STATUS_CODE)
+
+    def test_posix_shell_stops_reading_stdin_after_eof_and_drains_output(self):
+        channel = Mock()
+        channel.closed = False
+        channel.recv_ready.side_effect = [False, True, False, False]
+        channel.recv.return_value = b"output after stdin closes"
+        channel.exit_status_ready.side_effect = [False, False, True]
+        channel.recv_exit_status.return_value = 17
+        client = Mock()
+        client.invoke_shell.return_value = contextlib.nullcontext(channel)
+        input_stream = Mock()
+        input_stream.isatty.return_value = True
+        with patch.object(network.os, "name", "posix"), \
+                patch.object(network, "raw_terminal", return_value=contextlib.nullcontext()), \
+                patch.object(network.shutil, "get_terminal_size", return_value=os.terminal_size(network.DEFAULT_TERMINAL_SIZE)), \
+                patch("sys.stdin", input_stream), patch("sys.stdout.isatty", return_value=True), \
+                patch("select.select", return_value=([input_stream], [], [])) as select_input, \
+                patch.object(network.os, "read", return_value=b"") as read_input, \
+                patch.object(network.time, "sleep", side_effect=lambda _: setattr(channel, "closed", True)) as sleep:
+            self.assertEqual(network.shell(client), 17)
+        select_input.assert_called_once()
+        read_input.assert_called_once()
+        channel.shutdown_write.assert_called_once()
+        channel.recv.assert_called_once_with(network.IO_CHUNK_SIZE)
+        sleep.assert_called_once_with(network.CHANNEL_POLL_SECONDS)
+
+    def test_drain_waits_for_delayed_output_after_exit_status(self):
+        channel = Mock()
+        channel.closed = False
+        channel.exit_status_ready.return_value = True
+        channel.recv_exit_status.return_value = 17
+        stdout, stderr = [], []
+        channel.recv_ready.side_effect = lambda: bool(stdout)
+        channel.recv_stderr_ready.side_effect = lambda: bool(stderr)
+        channel.recv.side_effect = lambda _: stdout.pop(0)
+        channel.recv_stderr.side_effect = lambda _: stderr.pop(0)
+
+        def late_output():
+            stdout.append(b"late stdout")
+            stderr.append(b"late stderr")
+        ticks = iter((late_output, lambda: setattr(channel, "closed", True)))
+        with patch.object(network.time, "sleep", side_effect=lambda _: next(ticks)()), \
+                patch("sys.stdout", new_callable=io.StringIO) as output, \
+                patch("sys.stderr", new_callable=io.StringIO) as errors:
+            self.assertEqual(network.drain(channel), 17)
+        self.assertEqual(output.getvalue(), "late stdout")
+        self.assertEqual(errors.getvalue(), "late stderr")
+        self.assertTrue(channel.closed)
+
+    def test_shell_waits_for_delayed_terminal_output_after_exit_status(self):
+        channel = Mock()
+        channel.closed = False
+        channel.exit_status_ready.return_value = True
+        channel.recv_exit_status.return_value = 17
+        pending = []
+        channel.recv_ready.side_effect = lambda: bool(pending)
+        channel.recv.side_effect = lambda _: pending.pop(0)
+        client = Mock()
+        client.invoke_shell.return_value = contextlib.nullcontext(channel)
+        input_stream = Mock()
+        input_stream.isatty.return_value = True
+        ticks = iter((lambda: pending.append(b"late terminal output"), lambda: setattr(channel, "closed", True)))
+
+        def poll_input(*args):
+            next(ticks)()
+            return [], [], []
+        with patch.object(network.os, "name", "posix"), \
+                patch.object(network, "raw_terminal", return_value=contextlib.nullcontext()), \
+                patch.object(network.shutil, "get_terminal_size", return_value=os.terminal_size(network.DEFAULT_TERMINAL_SIZE)), \
+                patch("sys.stdin", input_stream), \
+                patch("sys.stdout", new_callable=io.StringIO) as output, \
+                patch("sys.stdout.isatty", return_value=True), \
+                patch("select.select", side_effect=poll_input):
+            self.assertEqual(network.shell(client), 17)
+        self.assertEqual(output.getvalue(), "late terminal output")
+        self.assertTrue(channel.closed)
 
     def test_first_host_key_persists_and_changed_key_is_rejected(self):
         try:
@@ -228,8 +393,8 @@ class NetworkTests(unittest.TestCase):
             self.skipTest("Run setup for host-key tests")
         path = self.directory / "known_hosts"
         path.write_text("# preserve this comment", encoding="utf-8")
-        key = paramiko.RSAKey.generate(1024)
-        other_key = paramiko.RSAKey.generate(1024)
+        key = paramiko.RSAKey.generate(TEST_HOST_KEY_BITS)
+        other_key = paramiko.RSAKey.generate(TEST_HOST_KEY_BITS)
         policy = network.known_hosts_policy(paramiko, path)
         client = paramiko.SSHClient()
         with patch("sys.stderr", new_callable=io.StringIO) as errors:
@@ -251,18 +416,19 @@ class NetworkTests(unittest.TestCase):
             "import sys,json; print(json.dumps(sys.argv[1:])); sys.exit(37)", encoding="utf-8")
         args = ["FRANK", "exec", '$a = "hello café"; Write-Output "$a"', "C:\\path with spaces\\", "", 'a\\"b']
         script = "& " + " ".join("'" + item.replace("'", "''") + "'" for item in [str(wrapper), *args])
-        script += "; exit $LASTEXITCODE"
+        script += " 2024; exit $LASTEXITCODE"
+        expected = args + ["2024"]
         result = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 37, result.stderr)
-        self.assertEqual(json.loads(result.stdout), args)
+        self.assertEqual(json.loads(result.stdout), expected)
         # Outer subprocess capture is insufficient: PowerShell itself must receive native stdout.
-        command = "& " + " ".join("'" + item.replace("'", "''") + "'" for item in [str(wrapper), *args])
+        command = "& " + " ".join("'" + item.replace("'", "''") + "'" for item in [str(wrapper), *args]) + " 2024"
         pipeline = "$captured = " + command + "; $status = $LASTEXITCODE; $captured | Write-Output; exit $status"
         result = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", pipeline],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 37, result.stderr)
-        self.assertEqual(json.loads(result.stdout), args)
+        self.assertEqual(json.loads(result.stdout), expected)
 
     @unittest.skipUnless(os.name == "nt", "PowerShell Unicode stdout capture")
     def test_powershell_wrapper_unicode_output_and_encoding_restoration(self):
@@ -280,6 +446,22 @@ class NetworkTests(unittest.TestCase):
         lines = result.stdout.splitlines()
         self.assertEqual([int(value) for value in lines[0].split(",")], [ord(char) for char in "café_日本語"])
         self.assertEqual(lines[1], "437")
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell 5.1 redirected native stderr")
+    def test_powershell_redirected_stderr_preserves_stdout_and_status(self):
+        wrapper = self.directory / "home-network.ps1"
+        shutil.copyfile(Path(__file__).with_name("home-network.ps1"), wrapper)
+        (self.directory / "home_network.py").write_text(
+            "import sys; print('remote-error',file=sys.stderr); print('remote-output'); sys.exit(37)", encoding="utf-8")
+        for redirect in ("2>&1", "2>$null"):
+            script = "$ErrorActionPreference = 'Stop'; $captured = & '" + str(wrapper).replace("'", "''") + "' " + redirect
+            script += "; $status = $LASTEXITCODE; $captured | ForEach-Object { Write-Output $_.ToString() }; exit $status"
+            result = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 37, result.stderr)
+            self.assertIn("remote-output", result.stdout)
+            if redirect == "2>&1":
+                self.assertIn("remote-error", result.stdout)
 
 
 if __name__ == "__main__":

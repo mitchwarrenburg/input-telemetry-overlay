@@ -1,6 +1,6 @@
 # PowerShell 5.1+ launcher. All repositories share this user's isolated environment.
 $ErrorActionPreference = 'Stop'
-$forwarded = @($args)
+[string[]] $forwarded = @($args)
 $venv = Join-Path $env:LOCALAPPDATA 'HomeNetwork\venv-v1'
 $venvPython = Join-Path $venv 'Scripts\python.exe'
 $helper = Join-Path $PSScriptRoot 'home_network.py'
@@ -36,11 +36,15 @@ $json = ConvertTo-Json -InputObject (@($helper) + $forwarded) -Compress
 $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
 $runner = 'import base64,json,runpy,sys;sys.argv=json.loads(base64.b64decode(sys.argv[1]));runpy.run_path(sys.argv[0],run_name=''__main__'')'
 $previousEncoding = [Console]::OutputEncoding
+$previousErrorActionPreference = $ErrorActionPreference
 try {
     [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
+    # PS5 wraps redirected native stderr as ErrorRecord; preserve output and native status.
+    $ErrorActionPreference = 'Continue'
     & $interpreter -X utf8 -c $runner $encoded
     $result = $LASTEXITCODE
 } finally {
     [Console]::OutputEncoding = $previousEncoding
+    $ErrorActionPreference = $previousErrorActionPreference
 }
 exit $result
