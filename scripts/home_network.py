@@ -56,7 +56,7 @@ WINDOWS_KEY_EVENT = 0x0001
 WINDOWS_EVENT_UNION_BYTES = 16
 # Chosen bound on console records read per poll, not measured.
 WINDOWS_INPUT_BATCH_SIZE = 64
-# Win32 virtual-key codes for keys which carry no character, and the sequences xterm sends for them.
+# Win32 virtual-key codes: Alt, whose release can deliver composed text, and the keys sent as xterm sequences.
 WINDOWS_VK_MENU = 0x12
 WINDOWS_VK_PRIOR = 0x21
 WINDOWS_VK_NEXT = 0x22
