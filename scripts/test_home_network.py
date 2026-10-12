@@ -133,17 +133,66 @@ class NetworkTests(unittest.TestCase):
 
     def test_aliases_and_exact_curly_name(self):
         for name, expected in (("WIN", "FRANK"), ("iMac", "MACINDOZE"), ("macbook", "Mitch's MacBook Pro"),
-                               ("Mitch’s MacBook Pro", "Mitch's MacBook Pro"), ("mac.attlocal.net", "Mitch's MacBook Pro")):
+                               ("Mitch’s MacBook Pro", "Mitch's MacBook Pro"), ("mac.attlocal.net", "Mitch's MacBook Pro"),
+                               ("DevBox", "devbox"), ("nas-vm", "devbox")):
             self.assertEqual(network.resolve_host(name)["name"], expected)
         with self.assertRaises(ValueError):
             network.resolve_host("another-machine")
 
     def test_offline_commands_need_no_password_or_dependency(self):
         with patch.dict(os.environ, {}, clear=True), patch.object(network, "dependency", side_effect=AssertionError):
-            for args in (["hosts"], ["win", "info"], ["FRANK", "smb"]):
+            for args in (["hosts"], ["win", "info"], ["devbox", "info"]):
                 self.assertEqual(network.main(args), 0)
+            self.assertIn("mitch@192.168.1.20:22\nRemote shell: bash", network.sys.stdout.getvalue())
+            with patch.object(network.sys, "platform", "win32"):
+                self.assertEqual(network.main(["nas"]), 0)
+            self.assertIn("\\\\truenas\\files\\pitwire", network.sys.stdout.getvalue())
             with self.assertRaisesRegex(ValueError, "HOME_NETWORK_PW"):
                 network.connection(network.HOSTS[0])
+
+    def test_nas_root_follows_the_platform_and_the_actual_macos_mount(self):
+        self.assertEqual(network.nas_root("win32"), "\\\\truenas\\files\\pitwire")
+        with patch.object(network.os.path, "ismount", return_value=True) as mounted:
+            self.assertEqual(network.nas_root("linux"), "/pitwire")
+        mounted.assert_called_once_with("/pitwire/corpus")
+        with patch.object(network.os.path, "ismount", return_value=False), \
+                self.assertRaisesRegex(ValueError, "not mounted under /pitwire"):
+            network.nas_root("linux")
+        mounts = ("/dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)\n"
+                  "//mitch@frank/D on /Volumes/frank (smbfs, nodev, nosuid, mounted by mitch)\n"
+                  "//mitch@TrueNAS.local/files on /Volumes/files 1 (smbfs, nodev, nosuid, mounted by mitch)\n")
+        self.assertEqual(network.nas_root("darwin", mounts), "/Volumes/files 1/pitwire")
+        for source in ("//mitch@192.168.1.253/files", "//mitch@TrueNAS._smb._tcp.local/files", "//truenas/files"):
+            self.assertEqual(network.nas_root("darwin", source + " on /Volumes/files (smbfs)\n"), "/Volumes/files/pitwire")
+        with self.assertRaisesRegex(ValueError, "not mounted"):
+            network.nas_root("darwin", "//mitch@frank/files on /Volumes/files (smbfs)\n")
+
+    def test_nas_command_reads_the_macos_mount_table(self):
+        listing = SimpleNamespace(stdout="//mitch@truenas.local/files on /Volumes/files (smbfs, nodev)\n")
+        with patch.object(network.sys, "platform", "darwin"), \
+                patch.object(network.subprocess, "run", return_value=listing) as run:
+            self.assertEqual(network.main(["nas"]), 0)
+        self.assertEqual(run.call_args.args[0], ["mount"])
+        self.assertIn("/Volumes/files/pitwire", network.sys.stdout.getvalue())
+
+    def test_nas_command_reports_an_unmounted_share_or_a_failed_mount_listing(self):
+        failures = (SimpleNamespace(stdout="//mitch@frank/files on /Volumes/files (smbfs)\n"),
+                    subprocess.CalledProcessError(1, ["mount"]), OSError("mount is unavailable"))
+        for failure in failures:
+            outcome = {"side_effect": failure} if isinstance(failure, Exception) else {"return_value": failure}
+            with patch.object(network.sys, "platform", "darwin"), \
+                    patch.object(network.subprocess, "run", **outcome), \
+                    patch("sys.stderr", new_callable=io.StringIO) as errors:
+                self.assertEqual(network.main(["nas"]), 1)
+            self.assertTrue(errors.getvalue().startswith("Error: "))
+
+    def test_hosts_list_current_addresses_and_the_smb_action_is_gone(self):
+        self.assertEqual(network.main(["hosts"]), 0)
+        listing = network.sys.stdout.getvalue()
+        self.assertIn("MACINDOZE: mitch@192.168.1.249", listing)
+        self.assertIn("devbox: mitch@192.168.1.20", listing)
+        with patch("sys.stderr", new_callable=io.StringIO), self.assertRaises(SystemExit):
+            network.main(["FRANK", "smb"])
 
     def test_remote_paths_preserve_spaces_unicode_and_drive_root(self):
         self.assertEqual(network.remote_path(self.sftp, "D:\\data files\\café.txt"), "/D:/data files/café.txt")

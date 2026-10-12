@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Connect to the three home-network computers. Run --help for commands."""
+"""Connect to the home-network computers. Run --help for commands."""
 from __future__ import annotations
 
 import argparse
@@ -16,6 +16,7 @@ import shlex
 import shutil
 import socket
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -23,11 +24,21 @@ import time
 HOSTS = (
     {"name": "FRANK", "host": "192.168.1.247", "user": "mitch", "os": "windows",
      "aliases": ("win",)},
-    {"name": "MACINDOZE", "host": "192.168.1.243", "user": "mitch", "os": "windows",
+    {"name": "MACINDOZE", "host": "192.168.1.249", "user": "mitch", "os": "windows",
      "aliases": ("imac",)},
     {"name": "Mitch's MacBook Pro", "host": "mitch-mac.local", "user": "mitchwarrenburg", "os": "macos",
      "aliases": ("macbook", "mitch-mac", "mitch-mac.local", "Mac.attlocal.net")},
+    {"name": "devbox", "host": "192.168.1.20", "user": "mitch", "os": "linux",
+     "aliases": ("nas-vm",)},
 )
+REMOTE_SHELLS = {"windows": "PowerShell", "macos": "macOS login shell", "linux": "bash"}
+# Files shared between machines live under this directory of the NAS `files` share.
+NAS_WINDOWS_ROOT = "\\\\truenas\\files\\pitwire"
+NAS_DEVBOX_ROOT = "/pitwire"
+NAS_DIRECTORY = "pitwire"
+# Finder's Network sidebar mounts the share under its Bonjour service name.
+NAS_MOUNT = re.compile(r"^//(?:[^@/]*@)?(?:truenas(?:\._smb\._tcp)?(?:\.local)?|192\.168\.1\.253)/files on (.+?) \(smbfs",
+                       re.IGNORECASE)
 # LAN waits and polling intervals, in seconds: chosen for a home network, not measured.
 CONNECT_TIMEOUT = 15
 AUTH_TIMEOUT = 30
@@ -83,16 +94,35 @@ def resolve_host(name):
     raise ValueError("Unknown machine: %s. Run 'hosts' for names and aliases." % name)
 
 
+def nas_root(platform=None, mounts=None):
+    """Return this computer's path to the shared directory on the NAS."""
+    platform = sys.platform if platform is None else platform
+    if platform == "win32":
+        return NAS_WINDOWS_ROOT
+    if platform != "darwin":
+        # Unmounted, this path is devbox's own disk, and a publish there reaches no other machine.
+        if not os.path.ismount(posixpath.join(NAS_DEVBOX_ROOT, "corpus")):
+            raise ValueError("The NAS exports are not mounted under %s." % NAS_DEVBOX_ROOT)
+        return NAS_DEVBOX_ROOT
+    if mounts is None:
+        mounts = subprocess.run(["mount"], capture_output=True, text=True, check=True).stdout
+    # Finder picks the mount point, so read it back instead of assuming /Volumes/files.
+    for line in mounts.splitlines():
+        match = NAS_MOUNT.match(line)
+        if match:
+            return posixpath.join(match.group(1), NAS_DIRECTORY)
+    raise ValueError("The NAS share is not mounted. Connect to smb://truenas.local/files first.")
+
+
 def parser():
     result = argparse.ArgumentParser(
         description="SSH/SFTP for the home network; password comes only from HOME_NETWORK_PW.",
-        usage="%(prog)s hosts | MACHINE ACTION [arguments]",
+        usage="%(prog)s hosts | nas | MACHINE ACTION [arguments]",
         epilog="Run the platform wrapper with 'setup' once. Quote remote commands as one argument.")
-    result.add_argument("machine", help="FRANK/win, MACINDOZE/imac, or macbook (exact names also accepted)")
+    result.add_argument("machine", help="FRANK/win, MACINDOZE/imac, macbook or devbox (exact names also accepted)")
     commands = result.add_subparsers(dest="action", required=True)
     for action, help_text in (
         ("info", "show account and address (offline)"),
-        ("smb", "show FRANK's C/D/E SMB share paths (offline)"),
         ("check", "verify SSH command execution and SFTP access"),
         ("shell", "start a remote shell; requires an interactive terminal"),
         ("sftp", "start an SFTP prompt (pwd, cd, ls, get, put, exit)"),
@@ -620,19 +650,19 @@ def main(argv=None):
         for host in HOSTS:
             print("%s: %s@%s (aliases: %s)" % (host["name"], host["user"], host["host"], ", ".join(host["aliases"])))
         return 0
+    if argv == ["nas"]:
+        try:
+            print(nas_root())
+        except (OSError, ValueError, subprocess.CalledProcessError) as error:
+            print("Error: %s" % error, file=sys.stderr)
+            return 1
+        return 0
     args = parser().parse_args(argv)
     try:
         host = resolve_host(args.machine)
         if args.action == "info":
             print("%s\nSSH/SFTP: %s@%s:%d\nRemote shell: %s" %
-                  (host["name"], host["user"], host["host"], SSH_PORT, "PowerShell" if host["os"] == "windows" else "macOS login shell"))
-            return 0
-        if args.action == "smb":
-            if host["name"] != "FRANK":
-                raise ValueError("Shared drives are on FRANK. Run 'FRANK smb'.")
-            for drive in ("C", "D", "E"):
-                print("%s (%s): \\\\FRANK\\%s | \\\\%s\\%s | smb://%s/%s" %
-                      (drive, "read-only" if drive == "C" else "read/write", drive, host["host"], drive, host["host"], drive))
+                  (host["name"], host["user"], host["host"], SSH_PORT, REMOTE_SHELLS[host["os"]]))
             return 0
         if args.action == "shell" and (not sys.stdin.isatty() or not sys.stdout.isatty()):
             raise ValueError("shell requires an interactive terminal. Agents should use exec with one quoted command.")
