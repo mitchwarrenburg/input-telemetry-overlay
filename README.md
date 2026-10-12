@@ -234,4 +234,4 @@ Claude/Codex server, per-checkout indexing and CLI commands.
 
 ## Home network
 
-[Home network access](docs/home-network.md) covers remote shells, file transfers and collecting iRacing data from the primary machine.
+[Home network access](docs/home-network.md) covers remote shells, NAS file sharing and collecting iRacing data from the primary machine.

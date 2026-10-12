@@ -8,4 +8,4 @@ Treat graph results as structural evidence; inspect unindexed or stale files dir
 
 ## Home network
 
-Home network: For remote debugging, file searches, command execution, transfers or iRacing data collection, use the [home-network skill](.agents/skills/home-network/SKILL.md) and [access guide](docs/home-network.md).
+Home network: For remote debugging, file searches, command execution, NAS file sharing or iRacing data collection, use the [home-network skill](.agents/skills/home-network/SKILL.md) and [access guide](docs/home-network.md).

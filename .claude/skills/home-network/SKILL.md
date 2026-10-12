@@ -1,9 +1,10 @@
 ---
 name: home-network
 description: >-
-  Work on FRANK, MACINDOZE or Mitch's MacBook Pro through SSH, SFTP or SMB.
-  Use for remote debugging, file searches, command execution, file transfers
-  and collecting iRacing data from the home network.
+  Work on FRANK, MACINDOZE, devbox or Mitch's MacBook Pro over SSH, and share
+  files between them through the NAS. Use for remote debugging, file searches,
+  command execution, NAS file sharing and collecting iRacing data from the
+  home network.
 ---
 
 Read and follow the [canonical home-network skill](../../../.agents/skills/home-network/SKILL.md).
